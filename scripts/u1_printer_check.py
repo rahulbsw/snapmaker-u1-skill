@@ -17,7 +17,7 @@ import zipfile
 
 MAX_BYTES = 1024 * 1024
 OBJECTS = ('print_stats', 'virtual_sdcard', 'heater_bed', 'extruder', 'extruder1',
-           'extruder2', 'extruder3', 'filament_detect',
+           'extruder2', 'extruder3', 'filament_detect', 'print_task_config',
            *(f'filament_motion_sensor e{i}_filament' for i in range(4)))
 ENDPOINTS = {'info': '/printer/info', 'objects': '/printer/objects/list', 'query': '/printer/objects/query'}
 
@@ -91,6 +91,51 @@ def _color(value):
     return value[:7].upper()
 
 
+def _item(values, index):
+    return values[index] if isinstance(values, list) and index < len(values) else None
+
+
+def _rgb(value):
+    return f'#{value:06X}' if type(value) is int and 0 <= value <= 0xFFFFFF else None
+
+
+def tag_metadata(entry):
+    """Keep decoded tag fields separate from editable printer configuration."""
+    if _text(entry.get('VENDOR')) is None:
+        return None
+    tag = {key: _text(entry.get(key)) for key in ('VENDOR', 'MANUFACTURER', 'MAIN_TYPE', 'SUB_TYPE')}
+    for key in ('DIAMETER', 'WEIGHT', 'LENGTH', 'DRYING_TEMP', 'DRYING_TIME', 'HOTEND_MIN_TEMP',
+                'HOTEND_MAX_TEMP', 'BED_TEMP', 'FIRST_LAYER_TEMP', 'OTHER_LAYER_TEMP', 'SKU'):
+        value = _number(entry.get(key))
+        tag[key] = value if value is not None and value > 0 else None
+    count = entry.get('COLOR_NUMS')
+    count = count if type(count) is int and 1 <= count <= 5 else None
+    tag['COLOR_NUMS'] = count
+    for i in range(1, 6):
+        tag[f'RGB_{i}'] = _rgb(entry.get(f'RGB_{i}')) if i == 1 or (count is not None and i <= count) else None
+    alpha = entry.get('ALPHA')
+    tag['ALPHA'] = alpha if type(alpha) is int and 0 <= alpha <= 255 else None
+    tag['OFFICIAL'] = entry.get('OFFICIAL') if type(entry.get('OFFICIAL')) is bool else None
+    uid = entry.get('CARD_UID')
+    tag['CARD_UID'] = uid if isinstance(uid, list) and 1 <= len(uid) <= 32 and all(type(v) is int and 0 <= v <= 255 for v in uid) and any(uid) else None
+    return tag
+
+
+def configured_filament(config, index):
+    material = _text(_item(config.get('filament_type'), index))
+    if material is None:
+        return None
+    rgba = _item(config.get('filament_color_rgba'), index)
+    rgba = re.fullmatch(r'#?([0-9A-Fa-f]{8})', rgba) if isinstance(rgba, str) else None
+    rgba = rgba[1].upper() if rgba else None
+    official = _item(config.get('filament_official'), index)
+    return {'source': 'printer_configuration', 'material': material.upper(),
+            'vendor': _text(_item(config.get('filament_vendor'), index)),
+            'sub_type': _text(_item(config.get('filament_sub_type'), index)),
+            'color': '#' + rgba[:6] if rgba else None, 'alpha': int(rgba[6:], 16) if rgba else None,
+            'official': official if type(official) is bool else None}
+
+
 def load_expected(path):
     path = Path(path)
     if not path.is_file() or path.stat().st_size > MAX_BYTES:
@@ -157,6 +202,7 @@ def collect_snapshot(host, port=80, *, timeout=5, api_key=None):
         raise CheckError('printer returned invalid object status')
     slots = []
     metadata = status.get('filament_detect', {}).get('info', [])
+    config = status.get('print_task_config', {})
     if not isinstance(metadata, list):
         metadata = []
     for index in range(4):
@@ -165,22 +211,30 @@ def collect_snapshot(host, port=80, *, timeout=5, api_key=None):
         has_metadata = _text(entry.get('VENDOR')) is not None
         rgb = entry.get('RGB_1') if has_metadata else None
         material = _text(entry.get('MAIN_TYPE')) if has_metadata else None
+        configured = configured_filament(config, index)
+        identity = {'material': material.upper() if material else None, 'color': _rgb(rgb)}
+        conflicts = [key for key, value in identity.items() if configured and value is not None and configured[key] is not None and value != configured[key]]
         slots.append({'tool': index + 1, 'sensor_enabled': sensor.get('enabled') if type(sensor.get('enabled')) is bool else None,
                       'filament_detected': sensor.get('filament_detected') if type(sensor.get('filament_detected')) is bool else None,
-                      'metadata_available': has_metadata, 'material': material.upper() if material else None,
-                      'color': f'#{rgb:06X}' if type(rgb) is int and 0 <= rgb <= 0xFFFFFF else None,
-                      'manufacturer': _text(entry.get('MANUFACTURER')) if has_metadata else None})
+                      'metadata_available': has_metadata, **identity,
+                      'metadata_source': 'filament_detect' if has_metadata else 'unknown',
+                      'manufacturer': _text(entry.get('MANUFACTURER')) if has_metadata else None,
+                      'tag_metadata': tag_metadata(entry), 'configured_filament': configured, 'metadata_conflicts': conflicts})
     print_state = _text(status.get('print_stats', {}).get('state'))
     printer_state = _text(info.get('state'))
     progress = _number(status.get('virtual_sdcard', {}).get('progress'))
     duration = _number(status.get('print_stats', {}).get('print_duration'))
+    mapping = config.get('extruder_map_table')
+    mapping = [v + 1 if type(v) is int and 0 <= v <= 3 else None for v in mapping] if isinstance(mapping, list) and 1 <= len(mapping) <= 32 else None
     return {'captured_at_utc': datetime.now(timezone.utc).isoformat(), 'printer_state': printer_state,
             'print_state': print_state, 'idle': printer_state == 'ready' and print_state in {'standby', 'complete', 'cancelled'},
             'progress_percent': progress * 100 if progress is not None and 0 <= progress <= 1 else None,
             'print_duration_seconds': duration if duration is not None and duration >= 0 else None,
             'temperatures_c': {name: {key: _number(status.get(name, {}).get(key)) for key in ('temperature', 'target')}
                                for name in ('heater_bed', 'extruder', 'extruder1', 'extruder2', 'extruder3')},
-            'slots': slots, 'unavailable_objects': [name for name in OBJECTS if name not in status]}
+            'slots': slots, 'logical_to_physical_tools': mapping,
+            'tool_map_scope': 'One-based physical tools for the printer current task, not a mapping for a new project.',
+            'unavailable_objects': [name for name in OBJECTS if name not in status]}
 
 
 def compare_slots(snapshot, expected):
@@ -191,6 +245,8 @@ def compare_slots(snapshot, expected):
         checks = {'presence': 'unknown' if presence is None else 'match' if presence else 'mismatch'}
         for key in ('material', 'color'):
             checks[key] = 'unknown' if actual[key] is None else 'match' if actual[key] == wanted[key] else 'mismatch'
+        if actual.get('metadata_conflicts'):
+            checks['metadata_consistency'] = 'mismatch'
         rows.append({'tool': tool, 'expected': wanted, 'reported': actual, 'checks': checks})
     return {'scope': 'Known idle state, explicit physical slots, presence and printer-reported material/RGB metadata only; no calibration, pigmentation or remaining-weight verification.',
             'slots': rows, 'passed': bool(rows) and snapshot['idle'] and all(value == 'match' for row in rows for value in row['checks'].values())}

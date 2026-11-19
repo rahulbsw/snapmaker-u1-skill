@@ -126,7 +126,8 @@ class PrinterCheckTests(unittest.TestCase):
         result = check.compare_slots(snapshot, {1: {'material': 'PLA', 'color': '#FFFFFF'}})
         self.assertFalse(result['passed'])
         self.assertEqual(result['slots'][0]['checks'], {'presence': 'match', 'material': 'unknown', 'color': 'unknown'})
-        self.assertNotIn('WEIGHT', json.dumps(snapshot))
+        self.assertIsNone(snapshot['slots'][0]['tag_metadata'])
+        self.assertEqual(snapshot['slots'][0]['metadata_source'], 'unknown')
 
     def test_absent_disabled_and_missing_sensors_are_distinct_from_loaded(self):
         for sensor, expected in [({'enabled': True, 'filament_detected': False}, 'mismatch'),
@@ -160,6 +161,82 @@ class PrinterCheckTests(unittest.TestCase):
         query = self.calls[-1][1]
         self.assertNotIn('filament_detect', query)
         json.dumps(snapshot, allow_nan=False)
+
+    def test_decoded_tag_fields_are_separate_and_unused_defaults_stay_unknown(self):
+        data = live_data()
+        data['filament_detect']['info'][0].update({'MANUFACTURER': 'Synthetic Maker', 'SUB_TYPE': 'Basic',
+            'DIAMETER': 175, 'WEIGHT': 1000, 'LENGTH': 330, 'DRYING_TEMP': 50, 'DRYING_TIME': 6,
+            'HOTEND_MIN_TEMP': 190, 'HOTEND_MAX_TEMP': 230, 'BED_TEMP': 60, 'FIRST_LAYER_TEMP': 0,
+            'OTHER_LAYER_TEMP': float('nan'), 'COLOR_NUMS': 1, 'RGB_2': 0xFFFFFF,
+            'ALPHA': 0, 'OFFICIAL': True, 'CARD_UID': [1, 2, 3, 4]})
+        slot = self.snapshot(data)['slots'][0]
+        self.assertEqual(slot['metadata_source'], 'filament_detect')
+        tag = slot['tag_metadata']
+        self.assertEqual(tag['DIAMETER'], 175)  # Raw firmware encoding, no guessed unit conversion.
+        self.assertEqual(tag['WEIGHT'], 1000)
+        self.assertEqual(tag['DRYING_TIME'], 6)
+        self.assertEqual(tag['CARD_UID'], [1, 2, 3, 4])
+        self.assertTrue(tag['OFFICIAL'])
+        self.assertEqual(tag['ALPHA'], 0)
+        self.assertIsNone(tag['RGB_2'])
+        self.assertIsNone(tag['FIRST_LAYER_TEMP'])
+        self.assertIsNone(tag['OTHER_LAYER_TEMP'])
+        json.dumps(slot, allow_nan=False)
+
+    def test_invalid_tag_fields_are_not_coerced_to_real_values(self):
+        for uid in [0, [0, 0, 0, 0], [True, 2, 3, 4], [-1], [256], [1] * 33, 'unrecognized']:
+            tag = check.tag_metadata({'VENDOR': 'Synthetic', 'CARD_UID': uid, 'ALPHA': 256,
+                                      'RGB_1': True, 'WEIGHT': -1, 'OFFICIAL': 'true'})
+            self.assertIsNone(tag['CARD_UID'])
+            self.assertIsNone(tag['ALPHA'])
+            self.assertIsNone(tag['RGB_1'])
+            self.assertIsNone(tag['WEIGHT'])
+            self.assertIsNone(tag['OFFICIAL'])
+        tag = check.tag_metadata({'VENDOR': 'Synthetic', 'COLOR_NUMS': 2, 'RGB_1': 0, 'RGB_2': 0x123456})
+        self.assertEqual(tag['RGB_1'], '#000000')
+        self.assertEqual(tag['RGB_2'], '#123456')
+
+    def test_configured_third_party_identity_does_not_become_an_rfid_match(self):
+        data = live_data()
+        data['filament_detect']['info'][0] = {'VENDOR': 'NONE', 'RGB_1': 0xFFFFFF}
+        data['print_task_config'] = {'filament_type': ['PLA'], 'filament_vendor': ['Generic'],
+            'filament_sub_type': ['Basic'], 'filament_color_rgba': ['ff000080'],
+            'filament_official': [False], 'filament_exist': [True]}
+        snapshot = self.snapshot(data)
+        slot = snapshot['slots'][0]
+        self.assertIsNone(slot['material'])
+        self.assertIsNone(slot['color'])
+        self.assertIsNone(slot['tag_metadata'])
+        self.assertEqual(slot['configured_filament'], {'source': 'printer_configuration', 'material': 'PLA',
+            'vendor': 'Generic', 'sub_type': 'Basic', 'color': '#FF0000', 'alpha': 128, 'official': False})
+        self.assertFalse(check.compare_slots(snapshot, {1: {'material': 'PLA', 'color': '#FF0000'}})['passed'])
+        del data['filament_motion_sensor e0_filament']
+        result = check.compare_slots(self.snapshot(data), {1: {'material': 'PLA', 'color': '#FF0000'}})
+        self.assertEqual(result['slots'][0]['checks']['presence'], 'unknown')
+
+    def test_configured_rfid_conflicts_prevent_comparison_success(self):
+        data = live_data()
+        data['print_task_config'] = {'filament_type': ['PETG'], 'filament_color_rgba': ['000000FF']}
+        snapshot = self.snapshot(data)
+        self.assertEqual(snapshot['slots'][0]['metadata_conflicts'], ['material', 'color'])
+        result = check.compare_slots(snapshot, {1: {'material': 'PLA', 'color': '#FF0000'}})
+        self.assertFalse(result['passed'])
+        self.assertEqual(result['slots'][0]['checks']['metadata_consistency'], 'mismatch')
+        data['print_task_config'] = {'filament_type': ['PLA'], 'filament_color_rgba': ['FF0000FF']}
+        self.assertTrue(check.compare_slots(self.snapshot(data), {1: {'material': 'PLA', 'color': '#FF0000'}})['passed'])
+
+    def test_partial_configuration_and_current_task_mapping_are_conservative(self):
+        data = live_data()
+        data['print_task_config'] = {'filament_type': ['NONE', 'PLA'], 'filament_color_rgba': ['FFFFFFFF', '###FF0000FF'],
+            'extruder_map_table': [3, 2, 1, 0, 4, True, '1', -1]}
+        snapshot = self.snapshot(data)
+        self.assertIsNone(snapshot['slots'][0]['configured_filament'])
+        self.assertIsNone(snapshot['slots'][1]['configured_filament']['color'])
+        self.assertIsNone(snapshot['slots'][2]['configured_filament'])
+        self.assertEqual(snapshot['logical_to_physical_tools'], [4, 3, 2, 1, None, None, None, None])
+        self.assertIn('not a mapping for a new project', snapshot['tool_map_scope'])
+        data['print_task_config'] = {'filament_type': 'PLA', 'extruder_map_table': [0] * 33}
+        self.assertIsNone(self.snapshot(data)['logical_to_physical_tools'])
 
     def test_project_mapping_is_explicit_complete_and_preserves_source(self):
         path = self.project()

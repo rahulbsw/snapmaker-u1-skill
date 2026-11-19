@@ -14,7 +14,7 @@
 | U1 Full Spectrum | Matching/calibration workflow | Native Orca matching with actual spools and color review required |
 | Bambu projects | Guarded wrapper, source/mapping audits, stale G-code removal | Separate noncommercial backend; up to four ordinary colors with bijective routing |
 | Slicing and estimates | Local official U1 0.4 mm profiles, isolated runs, actual G-code estimates | Mixed projects use native project slicing; no printer upload; layer review required |
-| Optional printer check | Read-only local status, temperatures, progress and four-slot material/color/presence comparison | Explicit private IP and physical mapping required; missing metadata stays unknown; no controls, remaining-weight measurement or mix calibration |
+| Optional printer check | Read-only local status, temperatures, decoded RFID details, separate configured filament settings and four-slot comparisons | Explicit authorized target and physical mapping required; missing RFID stays unknown; conflicts need review; no controls, remaining-weight measurement or mix calibration |
 | Filament and plate optimization | Geometry/infill/support/color-change tradeoffs and slice comparisons | No globally optimal packing or guaranteed material savings |
 
 CAD and slice checks have been exercised locally. Public tests use synthetic geometry; optional dependencies are not bundled. Physical-print accuracy and portrait likeness are never inferred from automated test success.
