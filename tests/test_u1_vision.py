@@ -21,7 +21,7 @@ class NativeVisionTests(unittest.TestCase):
         cls.build_directory = tempfile.TemporaryDirectory(prefix="u1-vision-build-")
         cls.addClassCleanup(cls.build_directory.cleanup)
         cls.binary = Path(cls.build_directory.name) / "u1_vision"
-        subprocess.run(["xcrun", "swiftc", "-O", "-parse-as-library", str(SOURCE), "-o", str(cls.binary), "-module-cache-path", "/private/tmp/u1-swift-cache"], check=True, capture_output=True, text=True, timeout=180)
+        subprocess.run(["xcrun", "swiftc", "-O", "-parse-as-library", str(SOURCE), "-o", str(cls.binary), "-module-cache-path", str(Path(cls.build_directory.name) / "module-cache")], check=True, capture_output=True, text=True, timeout=180)
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="u1-vision-test-")

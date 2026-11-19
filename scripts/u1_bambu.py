@@ -63,7 +63,7 @@ def verify_runtime(runtime):
         raise ConversionError("Local Bambu converter is missing; see references/BAMBU_CONVERSION.md for setup.") from exc
     if revision != COMMIT or changes:
         raise ConversionError("Bambu converter revision/files changed; review the installation before conversion.")
-    python = runtime / ".venv/bin/python"
+    python = runtime / ".venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     if not python.is_file() or not os.access(python, os.X_OK):
         raise ConversionError("Bambu converter's isolated Python environment is missing.")
     return python

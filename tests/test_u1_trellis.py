@@ -58,7 +58,12 @@ class TrellisRunnerTests(unittest.TestCase):
         for name, symlink in [('existing', False), ('link', True)]:
             output = self.root / name
             if symlink:
-                output.symlink_to(self.root / 'missing', target_is_directory=True)
+                try:
+                    output.symlink_to(self.root / 'missing', target_is_directory=True)
+                except OSError as exc:
+                    if sys.platform != 'win32':
+                        raise
+                    self.skipTest('Windows symlink privileges unavailable: ' + str(exc))
             else:
                 output.mkdir()
                 (output / 'keep').write_text('original')
@@ -155,7 +160,7 @@ class TrellisRunnerTests(unittest.TestCase):
 
     def test_child_network_guard_blocks_ip_and_dns_but_allows_unix_ipc(self):
         probe = self.root / 'socket_probe.py'
-        probe.write_text('''import json, socket, tempfile
+        probe.write_text('''import json, socket, sys, tempfile
 from pathlib import Path
 blocked = []
 def expect_blocked(name, operation):
@@ -175,16 +180,18 @@ for family, address in [(socket.AF_INET, ("127.0.0.1", 9)), (socket.AF_INET6, ("
         expect_blocked(str(family)+"sendto", lambda: connection.sendto(b"x", address))
 for name, arguments in [("getaddrinfo", ("localhost", 9)), ("gethostbyname", ("localhost",)), ("gethostbyname_ex", ("localhost",)), ("gethostbyaddr", ("127.0.0.1",)), ("getnameinfo", (("127.0.0.1", 9), 0))]:
     expect_blocked(name, lambda: getattr(socket, name)(*arguments))
-left, right = socket.socketpair(socket.AF_UNIX)
-with left, right:
-    left.sendall(b"local")
-    assert right.recv(5) == b"local"
-print(json.dumps({"blocked_operations": len(blocked), "unix_ipc": "passed"}))
+unix_ipc = "not_supported" if sys.platform == "win32" else "passed"
+if sys.platform != "win32":
+    left, right = socket.socketpair(socket.AF_UNIX)
+    with left, right:
+        left.sendall(b"local")
+        assert right.recv(5) == b"local"
+print(json.dumps({"blocked_operations": len(blocked), "unix_ipc": unix_ipc}))
 ''')
         result = subprocess.run([sys.executable, str(runner.SKILL_ROOT / 'scripts/u1_offline_exec.py'), '--', str(probe)],
                                 check=False, capture_output=True, text=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(json.loads(result.stdout), {'blocked_operations': 15, 'unix_ipc': 'passed'})
+        self.assertEqual(json.loads(result.stdout), {'blocked_operations': 15, 'unix_ipc': 'not_supported' if sys.platform == 'win32' else 'passed'})
 
 
 if __name__ == '__main__':

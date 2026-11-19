@@ -2,7 +2,7 @@
 
 [![skills.sh](https://skills.sh/b/rahulbsw/snapmaker-u1-skill)](https://skills.sh/rahulbsw/snapmaker-u1-skill/snapmaker-u1)
 
-A Codex skill for creating parametric 3D designs and preparing meshes for the **Snapmaker U1**. Includes local mesh checks, previews, color conversion, guarded Bambu-project conversion and Snapmaker Orca CLI slicing.
+An Agent Skill for creating parametric 3D designs and preparing meshes for the **Snapmaker U1**, usable with Codex, Claude Code, OpenClaw, Pi and other compatible agents. Core Python workflows support macOS, Windows and Linux; Apple helpers remain optional. Includes local mesh checks, previews, color conversion, guarded Bambu-project conversion and Snapmaker Orca CLI slicing. See [platform setup and limits](references/PLATFORMS.md).
 
 ![Original crescent jewelry-dish CAD example](examples/moon-jewelry-dish/preview.png)
 
@@ -27,18 +27,31 @@ Install through the [skills.sh CLI](https://skills.sh/docs/cli) (Node.js 22.20 o
 npx skills add rahulbsw/snapmaker-u1-skill --skill snapmaker-u1 -a codex
 ```
 
-This installs into the current project. Add `-g` for a global installation. The CLI installs the skill files; set up the Python core dependencies below in the installed folder before using mesh/CAD helpers. Optional AI runtimes and Snapmaker Orca remain separate installations.
+Replace `codex` with `claude-code`, `openclaw`, `pi` or `opencode`, or pass several agent names after `--agent`. This installs into the current project. Add `-g` for a global installation. The CLI installs the skill files; set up the Python core dependencies below in the installed folder before using mesh/CAD helpers. Optional AI runtimes and Snapmaker Orca remain separate installations.
 
-Alternatively, clone into your personal Codex skills directory:
+For development, clone into a directory of your choice:
 
 ```sh
-git clone https://github.com/rahulbsw/snapmaker-u1-skill.git ~/.codex/skills/snapmaker-u1
-cd ~/.codex/skills/snapmaker-u1
-python3.11 -m venv .venv
-.venv/bin/python -m pip install -r requirements-core.txt
+git clone https://github.com/rahulbsw/snapmaker-u1-skill.git
+cd snapmaker-u1-skill
 ```
 
-Invoke **`$snapmaker-u1`** in Codex with a text brief or reference images. The skill folder is self-contained; optional apps, neural weights and hardware are installed separately. If your Codex client does not refresh skill discovery immediately, reopen its session.
+In the installed skill folder or checkout, create and activate a Python 3.11 environment. On macOS/Linux:
+
+```sh
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-core.txt
+```
+
+On Windows PowerShell, activation is optional; invoke the interpreter directly:
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-core.txt
+```
+
+The examples below use `python` from the activated environment; on Windows substitute `.\.venv\Scripts\python.exe`. Invoke **`$snapmaker-u1`** in Codex, or ask your agent to use the `snapmaker-u1` skill with a text brief or reference images. The skill folder is self-contained; optional apps, neural weights and hardware are installed separately. Restart the agent session if its skill discovery needs refreshing.
 
 `local-runtime.json` is optional and ignored by Git. To configure absolute interpreter/runtime paths or enforce local-only processing, copy `local-runtime.example.json` and replace its example paths. Do not commit that machine-specific copy or credentials.
 
@@ -46,26 +59,27 @@ Invoke **`$snapmaker-u1`** in Codex with a text brief or reference images. The s
 
 ```sh
 # Geometry facts only; this checker uses the Python standard library.
-python3 scripts/u1_mesh_check.py your-model.stl
+python scripts/u1_mesh_check.py your-model.stl
 
 # Mesh views and a local interactive orbit viewer.
-.venv/bin/python scripts/u1_preview.py your-model.stl --output-dir outputs/preview --up-axis z
+python scripts/u1_preview.py your-model.stl --output-dir outputs/preview --up-axis z
 
 # Preserve aspect ratio, set a height and screen actual exports.
-.venv/bin/python scripts/u1_prepare.py your-model.stl --output-dir outputs/prepared --height-mm 100 --up-axis z
+python scripts/u1_prepare.py your-model.stl --output-dir outputs/prepared --height-mm 100 --up-axis z
 
 # Requires the separately installed Snapmaker Orca app and matching PLA spool.
-.venv/bin/python scripts/u1_slice.py outputs/prepared/prepared.stl --output-dir outputs/slicing --material 'Generic PLA'
+python scripts/u1_slice.py outputs/prepared/prepared.stl --output-dir outputs/slicing --material 'Generic PLA'
 ```
 
 Outputs include provenance, `toolpath-review.json` and `toolpaths-top.png` / `toolpaths-3d.png` for each distinct G-code artifact. `slice_completed` requires a successful slicer export, passing path checks and generated previews. `slicer_output_completed` separately records native export success. Confirm the **actual** plate, nozzle, spool and layer preview before printing. Single-filament CLI overrides intentionally refuse mixed/calibrated or unrecognized projects.
 
-For an original CAD example, run `.venv/bin/python examples/moon-jewelry-dish/build_dish.py`; see [its instructions](examples/moon-jewelry-dish/README.md). It creates local STL/GLB and validation reports, with no cloud service.
+For an original CAD example, run `python examples/moon-jewelry-dish/build_dish.py`; see [its instructions](examples/moon-jewelry-dish/README.md). It creates local STL/GLB and validation reports, with no cloud service. For Windows/Linux Orca paths, use the [platform-specific slicing examples](references/PLATFORMS.md#snapmaker-orca).
 
 ## Optional workflows
 
 | Need | Guide |
 |---|---|
+| Agent and operating-system setup | [Platforms](references/PLATFORMS.md) |
 | Native Apple segmentation/planning | [Apple tools](references/APPLE_NATIVE.md) |
 | Reconstruction from overlapping photos | [Apple Object Capture](references/APPLE_CAPTURE.md) |
 | TripoSR dependencies and public-weight setup | [Local engine](references/LOCAL_ENGINE.md) |
@@ -83,10 +97,10 @@ The heavy `requirements-local.txt` is for the optional **TripoSR** route; it is 
 ## Development
 
 ```sh
-.venv/bin/python -m unittest discover -s tests -v
+python -m unittest discover -s tests -v
 ```
 
-Tests use synthetic inputs and mocked printer HTTP responses; they do not contact a live printer, download model weights, generate a neural mesh or upload files. Optional Torch, native Apple and pinned Bambu-backend checks skip when their dependencies are absent. CI runs the portable core suite from a clean environment. Native Apple tests require macOS and a suitable Swift SDK.
+Tests use synthetic inputs and mocked printer HTTP responses; they do not contact a live printer, download model weights, generate a neural mesh or upload files. Optional Torch, native Apple and pinned Bambu-backend checks skip when their dependencies are absent. CI runs the core suite on Linux, Windows and macOS. Native Apple tests require macOS and a suitable Swift SDK.
 
 Private photos, generated jobs, runtimes, weights, local configuration, backups and agent state are excluded by `.gitignore`. The public example contains only original CAD source and its rendered preview; no customer portraits, calibration files or printer G-code are bundled.
 

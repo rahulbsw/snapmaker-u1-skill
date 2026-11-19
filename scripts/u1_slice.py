@@ -14,6 +14,7 @@ import json
 import math
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -39,6 +40,35 @@ MIXING_PRESET = "0.10mm Color Mixing @Snapmaker U1 (0.4 nozzle)"
 
 class SliceError(ValueError):
     pass
+
+
+def resolve_slicer(app_path=None, profiles_dir=None):
+    """Accept an app bundle, installation directory or explicit CLI executable."""
+    if app_path is None:
+        app_path = DEFAULT_APP if sys.platform == "darwin" and DEFAULT_APP.is_dir() else (
+            shutil.which("snapmaker-orca") or shutil.which("Snapmaker_Orca"))
+        if app_path is None:
+            raise SliceError("Snapmaker Orca not found; pass --app-path to its app bundle, installation directory or CLI executable")
+    app = Path(app_path).expanduser().resolve()
+    if app.is_file():
+        binary = app
+    else:
+        candidates = [app / name for name in (
+            "Contents/MacOS/Snapmaker_Orca", "snapmaker-orca.exe",
+            "Snapmaker_Orca.exe", "bin/snapmaker-orca", "snapmaker-orca")]
+        binary = next((path for path in candidates if path.is_file()), None)
+    if binary is None or binary.suffix.lower() in {".bat", ".cmd"}:
+        raise SliceError(f"Snapmaker Orca CLI executable not found at {app}; use an executable, not a shell command")
+    if profiles_dir is not None:
+        vendor = Path(profiles_dir).expanduser().resolve()
+    else:
+        bundle = binary.parent.name == "MacOS" and binary.parent.parent.name == "Contents"
+        candidates = [binary.parent / "resources/profiles/Snapmaker",
+                      binary.parent.parent / ("Resources" if bundle else "resources") / "profiles/Snapmaker"]
+        vendor = next((path for path in candidates if path.is_dir()), None)
+    if vendor is None or not all((vendor / kind).is_dir() for kind in ("machine", "process", "filament")):
+        raise SliceError("Snapmaker profiles not found; pass --profiles-dir to the matching resources/profiles/Snapmaker directory")
+    return binary, vendor
 
 
 def _read_json(path: Path) -> dict:
@@ -235,8 +265,8 @@ def _gcode_artifacts(run_dir: Path, machine: dict) -> list[dict]:
     return artifacts
 
 
-def slice_model(input_path: str | Path, output_dir: str | Path, *, app_path: str | Path = DEFAULT_APP, profiles_dir: str | Path | None = None, intent: str = "normal", material: str = "Generic PLA", mixing: bool = False, timeout: float = 600, dry_run: bool = False, infill_percent: float | None = None, supports: str = "auto") -> dict:
-    source, destination, app = Path(input_path).resolve(), Path(output_dir).resolve(), Path(app_path).resolve()
+def slice_model(input_path: str | Path, output_dir: str | Path, *, app_path: str | Path | None = None, profiles_dir: str | Path | None = None, intent: str = "normal", material: str = "Generic PLA", mixing: bool = False, timeout: float = 600, dry_run: bool = False, infill_percent: float | None = None, supports: str = "auto") -> dict:
+    source, destination = Path(input_path).resolve(), Path(output_dir).resolve()
     if not source.is_file() or source.suffix.lower() not in {".stl", ".obj", ".3mf"}:
         raise SliceError("input must be an existing STL, OBJ or 3MF file; prepare GLB geometry as STL first")
     if source.suffix.lower() == ".3mf":
@@ -269,10 +299,7 @@ def slice_model(input_path: str | Path, output_dir: str | Path, *, app_path: str
                 raise SliceError(unknown_project)
     if not math.isfinite(timeout) or timeout <= 0 or timeout > 600:
         raise SliceError("timeout must be finite, positive and at most 600 seconds")
-    binary = app / "Contents" / "MacOS" / "Snapmaker_Orca"
-    if not binary.is_file():
-        raise SliceError(f"Snapmaker Orca executable not found: {binary}")
-    vendor = Path(profiles_dir).resolve() if profiles_dir else app / "Contents" / "Resources" / "profiles" / "Snapmaker"
+    binary, vendor = resolve_slicer(app_path, profiles_dir)
     presets, selection = prepare_profiles(vendor, intent=intent, material=material, mixing=mixing, infill_percent=infill_percent, supports=supports)
     destination.mkdir(parents=True, exist_ok=True)
     # A new directory makes stale G-code impossible to mistake for this run.
@@ -339,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--app-path", type=Path, default=DEFAULT_APP)
+    parser.add_argument("--app-path", type=Path, help="Snapmaker Orca app bundle, installation directory or CLI executable; otherwise use the macOS default or PATH")
     parser.add_argument("--profiles-dir", type=Path, default=None, help="explicit vendor profile directory for another local installation")
     parser.add_argument("--intent", choices=list(INTENT_PRESETS), default="normal")
     parser.add_argument("--material", default="Generic PLA", help="exact installed Snapmaker filament preset name")

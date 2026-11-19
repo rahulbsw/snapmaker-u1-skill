@@ -49,6 +49,8 @@ python3.11 -m venv .runtime/bambu-to-u1/.venv
 
 Python 3.11 is tested. Set `bambu_runtime` to the absolute checkout path, or pass `--runtime-dir /absolute/path/to/bambu-to-u1` before the subcommand. `doctor` and conversion check the revision and require unchanged backend, references, rules and license. The child process blocks Python IP networking and DNS; this is not an OS-wide network sandbox. Conversion itself uses local files only.
 
+On Windows create the environment with `py -3.11 -m venv .runtime/bambu-to-u1/.venv` and install through `.runtime/bambu-to-u1/.venv/Scripts/python.exe` instead of `.venv/bin/python`. The adapter selects the OS-native interpreter layout. The separately installed backend must also work on the target OS; path resolution alone is not a conversion test. See [platform limits](PLATFORMS.md).
+
 ## Supported conversion boundary
 
 This adapter handles ordinary projects with at most four logical filament colors and optional one-to-one routing. It rejects greater color counts and native mixing states for manual treatment. This is an adapter limit: **the U1 can produce more than four apparent colors through Full Spectrum**. For that workflow read [FULL_SPECTRUM.md](FULL_SPECTRUM.md), use actual loaded filaments and preserve calibrated virtual-color assignments. Upstream native mixing support is still [documented as in development](https://github.com/thadius83/bambu-to-snapmaker-u1/blob/639b822e2db3b59b0dc7379771f7cdf872b06910/README.md#known-limitations).
