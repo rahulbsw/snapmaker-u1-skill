@@ -11,6 +11,7 @@ A Codex skill for creating parametric 3D designs and preparing meshes for the **
 - **CAD and mesh preparation:** editable designs, explicit scale/orientation, encoded STL/GLB checks, actual mesh views and offline orbit previews.
 - **U1 print planning:** Draft, Normal, Strong and Flexible intent; material/support/plate tradeoffs and actual slice estimates. The CLI adapter currently targets a **0.4 mm U1 nozzle** and never starts a print.
 - **Toolpath review:** all-layer extrusion-centerline checks against the resolved build polygon, exclusions and height, plus top/isometric previews of actual sliced supports, brim and model features. Unsupported motion or failed checks prevent slice completion; [scope and standalone use](docs/PRINT_GUIDE.md#toolpath-review).
+- **Optional printer check:** read-only local status, temperatures and loaded-spool comparison with an explicit physical slot map. Uses Python's standard library; no printer controls, uploads or automatic network discovery. [Setup and limits](references/PRINTER_CHECK.md).
 - **Color:** source appearance → target regions → native painted 3MF → Orca Full Spectrum matching. Export does not invent calibrated recipes. STL contains no color; an untextured GLB also contains no color to recover.
 - **Bambu/MakerWorld:** optional, separately installed converter for editable projects with up to four ordinary logical filaments. Source hashes and mapping reports are preserved; fresh slicing is required.
 - **Apple tools:** optional local Vision background removal, Foundation Models intent planning and Object Capture for overlapping real photo sets.
@@ -75,6 +76,7 @@ For an original CAD example, run `.venv/bin/python examples/moon-jewelry-dish/bu
 | Native Full Spectrum matching | [Color workflow](references/FULL_SPECTRUM.md) |
 | Bambu/MakerWorld project conversion | [Conversion](references/BAMBU_CONVERSION.md) |
 | Supports, materials and filament use | [Print guide](docs/PRINT_GUIDE.md) |
+| Printer status and loaded physical spools | [Read-only printer check](references/PRINTER_CHECK.md) |
 
 The heavy `requirements-local.txt` is for the optional **TripoSR** route; it is not needed for the basic checker, CAD example or mesh tools. Modly and TRELLIS need their own compatible environments, not a shared blanket dependency install.
 
@@ -84,7 +86,7 @@ The heavy `requirements-local.txt` is for the optional **TripoSR** route; it is 
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Tests use synthetic inputs and do not download model weights, generate a neural mesh, slice on a printer or upload files. Optional Torch, native Apple and pinned Bambu-backend checks skip when their dependencies are absent. CI runs the portable core suite from a clean environment. Native Apple tests require macOS and a suitable Swift SDK.
+Tests use synthetic inputs and mocked printer HTTP responses; they do not contact a live printer, download model weights, generate a neural mesh or upload files. Optional Torch, native Apple and pinned Bambu-backend checks skip when their dependencies are absent. CI runs the portable core suite from a clean environment. Native Apple tests require macOS and a suitable Swift SDK.
 
 Private photos, generated jobs, runtimes, weights, local configuration, backups and agent state are excluded by `.gitignore`. The public example contains only original CAD source and its rendered preview; no customer portraits, calibration files or printer G-code are bundled.
 
