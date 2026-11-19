@@ -1,5 +1,7 @@
 # Snapmaker U1 skill
 
+[![skills.sh](https://skills.sh/b/rahulbsw/snapmaker-u1-skill)](https://skills.sh/rahulbsw/snapmaker-u1-skill/snapmaker-u1)
+
 A Codex skill for creating parametric 3D designs and preparing meshes for the **Snapmaker U1**. Includes local mesh checks, previews, color conversion, guarded Bambu-project conversion and Snapmaker Orca CLI slicing.
 
 ![Original crescent jewelry-dish CAD example](examples/moon-jewelry-dish/preview.png)
@@ -17,7 +19,15 @@ Successful import, generation or slicing is not a completed physical print test.
 
 ## Install
 
-Clone into your personal Codex skills directory:
+Install through the [skills.sh CLI](https://skills.sh/docs/cli) (Node.js 22.20 or later):
+
+```sh
+npx skills add rahulbsw/snapmaker-u1-skill --skill snapmaker-u1 -a codex
+```
+
+This installs into the current project. Add `-g` for a global installation. The CLI installs the skill files; set up the Python core dependencies below in the installed folder before using mesh/CAD helpers. Optional AI runtimes and Snapmaker Orca remain separate installations.
+
+Alternatively, clone into your personal Codex skills directory:
 
 ```sh
 git clone https://github.com/rahulbsw/snapmaker-u1-skill.git ~/.codex/skills/snapmaker-u1
