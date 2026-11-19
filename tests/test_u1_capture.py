@@ -23,7 +23,7 @@ class NativeCaptureTests(unittest.TestCase):
         cls.build = tempfile.TemporaryDirectory(prefix="u1-capture-build-")
         cls.addClassCleanup(cls.build.cleanup)
         cls.binary = Path(cls.build.name) / "u1_capture"
-        subprocess.run(["xcrun", "swiftc", "-O", "-parse-as-library", str(SOURCE), "-o", str(cls.binary), "-module-cache-path", "/private/tmp/u1-swift-cache"], check=True, capture_output=True, text=True, timeout=180)
+        subprocess.run(["xcrun", "swiftc", "-O", "-parse-as-library", str(SOURCE), "-o", str(cls.binary), "-module-cache-path", str(Path(cls.build.name) / "module-cache")], check=True, capture_output=True, text=True, timeout=180)
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="u1-capture-test-")

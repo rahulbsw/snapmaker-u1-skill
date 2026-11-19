@@ -63,7 +63,7 @@ def verify_runtime(runtime):
         raise ConversionError("Local Bambu converter is missing; see references/BAMBU_CONVERSION.md for setup.") from exc
     if revision != COMMIT or changes:
         raise ConversionError("Bambu converter revision/files changed; review the installation before conversion.")
-    python = runtime / ".venv/bin/python"
+    python = runtime / ".venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     if not python.is_file() or not os.access(python, os.X_OK):
         raise ConversionError("Bambu converter's isolated Python environment is missing.")
     return python
@@ -162,8 +162,9 @@ def archive_info(path, filament_count=None):
         if len(set(name.casefold() for name in names)) != len(names):
             raise ConversionError("Duplicate/case-ambiguous 3MF members are unsupported.")
         for item in members:
-            name = item.filename
-            if "\\" in name or name.startswith("/") or ".." in PurePosixPath(name).parts or item.flag_bits & 1:
+            # ZipInfo normalizes backslashes on Windows; inspect the raw name.
+            name = item.orig_filename
+            if "\\" in name or "\x00" in name or name.startswith("/") or ".." in PurePosixPath(name).parts or item.flag_bits & 1:
                 raise ConversionError("Unsafe or encrypted 3MF archive member.")
             if item.file_size > 512 * 1024**2:
                 raise ConversionError("A 3MF member exceeds this adapter's 512 MiB limit.")

@@ -52,6 +52,41 @@ class SliceAdapterTests(unittest.TestCase):
         data = {"type": kind, "from": "system", **values}
         (self.vendor / kind / f"{preset_name}.json").write_text(json.dumps(data), encoding="utf-8-sig")
 
+    def test_slicer_layouts_resolve_and_keep_paths_with_spaces(self):
+        for label, relative_binary, relative_profiles in [
+            ("Mac app", "Contents/MacOS/Snapmaker_Orca", "Contents/Resources/profiles/Snapmaker"),
+            ("Windows install", "snapmaker-orca.exe", "resources/profiles/Snapmaker"),
+            ("Linux install", "bin/snapmaker-orca", "resources/profiles/Snapmaker"),
+        ]:
+            with self.subTest(layout=label):
+                app = self.root / label
+                binary, vendor = app / relative_binary, app / relative_profiles
+                binary.parent.mkdir(parents=True)
+                binary.touch()
+                for kind in ("machine", "process", "filament"):
+                    (vendor / kind).mkdir(parents=True)
+                self.assertEqual(slicer.resolve_slicer(app), (binary.resolve(), vendor.resolve()))
+                self.assertEqual(slicer.resolve_slicer(binary), (binary.resolve(), vendor.resolve()))
+                report = slicer.slice_model(self.source, self.root / label / "output", app_path=binary,
+                                             profiles_dir=self.vendor, dry_run=True)
+                self.assertEqual(report["execution"]["command"][0], str(binary.resolve()))
+                self.assertFalse(report["slice_completed"])
+
+    def test_path_discovery_and_missing_resources_fail_before_launch(self):
+        binary = self.root / "snapmaker-orca"
+        binary.touch()
+        with mock.patch.object(slicer.sys, "platform", "linux"), mock.patch.object(slicer.shutil, "which", return_value=str(binary)):
+            self.assertEqual(slicer.resolve_slicer(profiles_dir=self.vendor), (binary.resolve(), self.vendor.resolve()))
+        with self.assertRaisesRegex(slicer.SliceError, "profiles-dir"):
+            slicer.resolve_slicer(binary)
+        with mock.patch.object(slicer.sys, "platform", "linux"), mock.patch.object(slicer.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(slicer.SliceError, "app-path"):
+                slicer.resolve_slicer()
+        batch = self.root / "unsafe.cmd"
+        batch.touch()
+        with self.assertRaisesRegex(slicer.SliceError, "shell command"):
+            slicer.resolve_slicer(batch, self.vendor)
+
     def test_unmatched_target_colors_cannot_be_sliced_as_one_filament(self):
         source = self.root / "unmatched.3mf"
         with zipfile.ZipFile(source, "w") as archive:
@@ -191,7 +226,7 @@ class SliceAdapterTests(unittest.TestCase):
         output_dir = command[command.index("--outputdir") + 1]
         self.assertEqual(export_name, "project.3mf")
         self.assertFalse(Path(export_name).is_absolute())
-        self.assertEqual(str(output_dir) + "/" + export_name, str(run_dir.resolve() / "project.3mf"))
+        self.assertEqual(Path(output_dir) / export_name, run_dir.resolve() / "project.3mf")
         self.assertIn("--load-filaments", command)
         self.assertFalse(any("upload" in item or "send" in item or "print-host" in item for item in command))
         self.assertEqual(command[-1], str(self.source.resolve()))
@@ -243,7 +278,7 @@ class SliceAdapterTests(unittest.TestCase):
             def execute(argv, **kwargs):
                 directory = Path(kwargs['cwd'])
                 code = 'M83\nG0 X1 Y1 Z1\n' + tail
-                (directory / 'plate_1.gcode').write_text(code)
+                (directory / 'plate_1.gcode').write_bytes(code.encode('utf-8'))
                 with zipfile.ZipFile(directory / 'project.3mf', 'w') as archive:
                     archive.writestr('Metadata/plate_1.gcode', code)
                 return subprocess.CompletedProcess(argv, 0)

@@ -22,7 +22,7 @@ SOURCE_URL = 'https://github.com/VAST-AI-Research/TripoSR.git'
 SOURCE_COMMIT = '107cefdc244c39106fa830359024f6a2f1c78871'
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_POINTER = SKILL_ROOT / 'local-runtime.json'
-DEFAULT_RUNTIME = (Path(json.loads(RUNTIME_POINTER.read_text())['runtime_dir'])
+DEFAULT_RUNTIME = (Path(json.loads(RUNTIME_POINTER.read_text()).get('runtime_dir', SKILL_ROOT / '.runtime'))
                    if RUNTIME_POINTER.is_file() else SKILL_ROOT / '.runtime')
 PATCH_FROM = 'from torchmcubes import marching_cubes'
 PATCH_TO = 'from u1_mcubes import marching_cubes'
@@ -130,7 +130,8 @@ def setup(runtime):
     for name in ['model.ckpt']:
         target = local_weights / name
         if not target.exists():
-            target.symlink_to(Path(downloaded[name]).resolve())
+            # Copy works on Windows without Developer Mode/symlink privileges.
+            shutil.copy2(Path(downloaded[name]).resolve(), target)
     cfg = OmegaConf.load(downloaded['config.yaml'])
     # Upstream tokenizer calls hf_hub_download. A narrow local-only patch uses its
     # existing config path, not network downloads during image processing.

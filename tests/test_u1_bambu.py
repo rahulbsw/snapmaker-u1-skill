@@ -20,6 +20,7 @@ SPEC = importlib.util.spec_from_file_location("u1_bambu", ROOT / "scripts/u1_bam
 bambu = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bambu)
 RUNTIME = ROOT / ".runtime/bambu-to-u1"
+RUNTIME_PYTHON = RUNTIME / ".venv" / ("Scripts/python.exe" if bambu.sys.platform == "win32" else "bin/python")
 REFERENCE = RUNTIME / "profiles/0.20 Standard - Cube.3mf"
 CORE = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
 MESH_STAT = '<mesh_stat edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/>'
@@ -94,6 +95,17 @@ class BambuAdapterTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
 
+    def test_runtime_python_uses_native_virtual_environment_layout(self):
+        for platform, relative in [("win32", ".venv/Scripts/python.exe"), ("linux", ".venv/bin/python")]:
+            with self.subTest(platform=platform):
+                binary = self.root / relative
+                binary.parent.mkdir(parents=True, exist_ok=True)
+                binary.touch()
+                binary.chmod(0o755)
+                with mock.patch.object(bambu.sys, "platform", platform), mock.patch.object(
+                        bambu.subprocess, "check_output", side_effect=[bambu.COMMIT, ""]):
+                    self.assertEqual(bambu.verify_runtime(self.root), binary)
+
     def test_slot_map_requires_complete_distinct_physical_tools(self):
         self.assertEqual(bambu.parse_slot_map(None, 2), {0: 0, 1: 1})
         self.assertEqual(bambu.parse_slot_map("1:4,2:2", 2), {0: 3, 1: 1})
@@ -141,7 +153,12 @@ class BambuAdapterTests(unittest.TestCase):
     def test_archive_rejects_unsafe_ambiguous_and_gcode_only_inputs(self):
         for name in ["../escape.txt", "/absolute.txt", "Metadata\\bad.txt"]:
             with self.subTest(name=name):
-                path = synthetic_project(self.root / "unsafe.3mf", extras={name: "x"})
+                path = synthetic_project(self.root / "unsafe.3mf")
+                # Write the raw member name, bypassing Windows ZipInfo normalization.
+                member = zipfile.ZipInfo()
+                member.filename = name
+                with zipfile.ZipFile(path, "a") as archive:
+                    archive.writestr(member, "x")
                 with self.assertRaises(bambu.ConversionError):
                     bambu.archive_info(path)
         duplicate = synthetic_project(self.root / "ambiguous.3mf", extras={"3d/3DMODEL.MODEL": synthetic_model()})
@@ -280,7 +297,7 @@ class BambuAdapterTests(unittest.TestCase):
         self.assertFalse((destination / "backend-output.3mf").exists())
         self.assertEqual((destination / "input/source.3mf").read_bytes(), source.read_bytes())
 
-    @unittest.skipUnless((RUNTIME / ".venv/bin/python").is_file() and REFERENCE.is_file(), "optional pinned local backend not installed")
+    @unittest.skipUnless(RUNTIME_PYTHON.is_file() and REFERENCE.is_file(), "optional pinned local backend not installed")
     def test_actual_backend_preserves_synthetic_geometry_and_remaps_paint(self):
         source = synthetic_project(self.root / "synthetic-bambu.3mf")
         old_bytes = source.read_bytes()
@@ -317,7 +334,7 @@ class BambuAdapterTests(unittest.TestCase):
             self.assertEqual(model_metadata.find('./object/metadata[@key="wall_filament"]').get("value"), "1")
             self.assertEqual(model_metadata.find('./plate/metadata[@key="filament_maps"]').get("value"), "1 2 3 4")
 
-    @unittest.skipUnless((RUNTIME / ".venv/bin/python").is_file() and REFERENCE.is_file(), "optional pinned local backend not installed")
+    @unittest.skipUnless(RUNTIME_PYTHON.is_file() and REFERENCE.is_file(), "optional pinned local backend not installed")
     def test_actual_backend_sparse_assignment_routes_single_color_to_tool_four(self):
         source = synthetic_project(self.root / "synthetic-one-color.3mf")
         with zipfile.ZipFile(source) as archive:
@@ -336,7 +353,7 @@ class BambuAdapterTests(unittest.TestCase):
         self.assertTrue(all(number == 4 for _, number in report["output_slot_references"]["objects"]))
         self.assertFalse(report["ready_to_print"])
 
-    @unittest.skipUnless((RUNTIME / ".venv/bin/python").is_file() and REFERENCE.is_file(), "optional pinned local backend not installed")
+    @unittest.skipUnless(RUNTIME_PYTHON.is_file() and REFERENCE.is_file(), "optional pinned local backend not installed")
     def test_actual_backend_plate_wrapped_pause_and_toolchange_preserved(self):
         layers = ('<custom_gcodes_per_layer><plate id="1"><mode value="MultiExtruder"/>'
                   '<layer top_z="1" type="1" extruder="0" gcode="M620 SOURCE_PAUSE"/>'
@@ -351,7 +368,7 @@ class BambuAdapterTests(unittest.TestCase):
         self.assertEqual(events[1].get("extruder"), "1")
         self.assertFalse(report["ready_to_print"])
 
-    @unittest.skipUnless((RUNTIME / ".venv/bin/python").is_file() and REFERENCE.is_file(), "optional pinned local backend not installed")
+    @unittest.skipUnless(RUNTIME_PYTHON.is_file() and REFERENCE.is_file(), "optional pinned local backend not installed")
     def test_out_of_range_object_extruder_rejected_without_changing_source(self):
         source = synthetic_project(self.root / "synthetic-invalid-extruder.3mf")
         with zipfile.ZipFile(source) as archive:
@@ -366,7 +383,7 @@ class BambuAdapterTests(unittest.TestCase):
         self.assertFalse((output / "converted.3mf").exists())
         self.assertEqual(json.loads((output / "report.json").read_text())["status"], "conversion_failed")
 
-    @unittest.skipUnless((RUNTIME / ".venv/bin/python").is_file() and REFERENCE.is_file(), "optional pinned local backend not installed")
+    @unittest.skipUnless(RUNTIME_PYTHON.is_file() and REFERENCE.is_file(), "optional pinned local backend not installed")
     def test_variable_layer_range_configs_rejected_for_manual_review(self):
         for member in ["Metadata/layer_config_ranges.xml", "Metadata/layer_heights_profile.txt"]:
             with self.subTest(member=member):

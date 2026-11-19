@@ -8,6 +8,8 @@ TripoSR is a general-object baseline. Its generated side/back surfaces are infer
 
 Use Python 3.11. If installed, `local-runtime.json` in the skill directory identifies this machine's configured interpreter and runtime. Otherwise use the project-local virtual environment and `.runtime/` directory. Runtime files, weights, dependencies and private outputs are separate from the portable skill source.
 
+The examples below use POSIX paths. On Windows use `.venv/Scripts/python.exe` in place of `.venv/bin/python`; see [platform setup](PLATFORMS.md). Dependency pins are resolved together; a successful installation still needs a real engine test on the target hardware. CPU/CUDA on Windows/Linux does not require Apple Vision. Setup copies the checkpoint into the runtime, so allow space for both the Hugging Face cache and that copy; no Windows symlink privileges are required.
+
 ```sh
 uv venv --python 3.11 .venv
 uv pip install --python .venv/bin/python -r requirements-local.txt

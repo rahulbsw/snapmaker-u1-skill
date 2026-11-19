@@ -4,7 +4,7 @@
 |---|---|---|
 | Text to functional models | CAD workflow and editable original example | CAD tool/dependencies must exist; no direct neural text-to-3D backend |
 | Images to 3D | TripoSR setup; optional Modly and TRELLIS workflows | Generated hidden surfaces and facial likeness require review; not a measured scan |
-| Background removal | Native Apple Vision helper | macOS required; masks may retain backdrop or omit details |
+| Background removal | Native Apple Vision or optional local TripoSR human-segmentation model; supplied transparency | Apple helper requires macOS; optional segmentation needs local weights; masks require review |
 | Multiview capture | Native Apple Object Capture helper | Compatible Mac and overlapping real capture set required |
 | Print-intent planning | Draft / Normal / Strong / Flexible; optional Apple language helper | Suggestions are not calibrated printer settings |
 | Mesh validation | Bounds, degenerates, edges, winding/components and serialized-export checks | No universal strength, thickness, self-intersection or fit certification |
@@ -18,3 +18,5 @@
 | Filament and plate optimization | Geometry/infill/support/color-change tradeoffs and slice comparisons | No globally optimal packing or guaranteed material savings |
 
 CAD and slice checks have been exercised locally. Public tests use synthetic geometry; optional dependencies are not bundled. Physical-print accuracy and portrait likeness are never inferred from automated test success.
+
+The skill format and core Python workflow are agent-independent, with Linux, Windows and macOS CI definitions. Native Apple tools and the advanced patched TRELLIS runtime retain their platform limits. See [platform setup and validation scope](references/PLATFORMS.md).
