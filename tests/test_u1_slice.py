@@ -278,7 +278,7 @@ class SliceAdapterTests(unittest.TestCase):
             def execute(argv, **kwargs):
                 directory = Path(kwargs['cwd'])
                 code = 'M83\nG0 X1 Y1 Z1\n' + tail
-                (directory / 'plate_1.gcode').write_text(code)
+                (directory / 'plate_1.gcode').write_bytes(code.encode('utf-8'))
                 with zipfile.ZipFile(directory / 'project.3mf', 'w') as archive:
                     archive.writestr('Metadata/plate_1.gcode', code)
                 return subprocess.CompletedProcess(argv, 0)

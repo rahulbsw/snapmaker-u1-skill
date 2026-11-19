@@ -162,8 +162,9 @@ def archive_info(path, filament_count=None):
         if len(set(name.casefold() for name in names)) != len(names):
             raise ConversionError("Duplicate/case-ambiguous 3MF members are unsupported.")
         for item in members:
-            name = item.filename
-            if "\\" in name or name.startswith("/") or ".." in PurePosixPath(name).parts or item.flag_bits & 1:
+            # ZipInfo normalizes backslashes on Windows; inspect the raw name.
+            name = item.orig_filename
+            if "\\" in name or "\x00" in name or name.startswith("/") or ".." in PurePosixPath(name).parts or item.flag_bits & 1:
                 raise ConversionError("Unsafe or encrypted 3MF archive member.")
             if item.file_size > 512 * 1024**2:
                 raise ConversionError("A 3MF member exceeds this adapter's 512 MiB limit.")

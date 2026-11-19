@@ -153,7 +153,12 @@ class BambuAdapterTests(unittest.TestCase):
     def test_archive_rejects_unsafe_ambiguous_and_gcode_only_inputs(self):
         for name in ["../escape.txt", "/absolute.txt", "Metadata\\bad.txt"]:
             with self.subTest(name=name):
-                path = synthetic_project(self.root / "unsafe.3mf", extras={name: "x"})
+                path = synthetic_project(self.root / "unsafe.3mf")
+                # Write the raw member name, bypassing Windows ZipInfo normalization.
+                member = zipfile.ZipInfo()
+                member.filename = name
+                with zipfile.ZipFile(path, "a") as archive:
+                    archive.writestr(member, "x")
                 with self.assertRaises(bambu.ConversionError):
                     bambu.archive_info(path)
         duplicate = synthetic_project(self.root / "ambiguous.3mf", extras={"3d/3DMODEL.MODEL": synthetic_model()})
