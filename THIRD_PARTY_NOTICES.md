@@ -1,0 +1,18 @@
+# Third-party components
+
+The MIT license in this repository covers its original skill instructions, helper code and CAD example. It does not relicense downloaded source, dependencies, model weights, datasets, generated third-party assets or external applications. No such runtime or weight bundle is included in this repository or its source release.
+
+| Optional component | Source and attribution | Notes |
+|---|---|---|
+| Snapmaker Orca | [Snapmaker/OrcaSlicer](https://github.com/Snapmaker/OrcaSlicer) | Separate application and profiles; retain upstream licenses. No printer G-code or user calibration project is distributed here. |
+| Bambu-to-U1 backend | [thadius83/bambu-to-snapmaker-u1](https://github.com/thadius83/bambu-to-snapmaker-u1) | PolyForm Noncommercial 1.0.0 at the pinned revision. The wrapper does not make that backend commercially permissive. |
+| TripoSR code | [VAST-AI-Research/TripoSR](https://github.com/VAST-AI-Research/TripoSR) | MIT; copyright Tripo AI & Stability AI. Weights are obtained separately from [stabilityai/TripoSR](https://huggingface.co/stabilityai/TripoSR). |
+| Modly | [lightningpixel/modly](https://github.com/lightningpixel/modly) | MIT; copyright Lightning Pixel. Extensions and models have separate terms. |
+| TripoSG | [VAST-AI-Research/TripoSG](https://github.com/VAST-AI-Research/TripoSG), [weights](https://huggingface.co/VAST-AI/TripoSG) | Separately installed model; check its current license and the Modly extension's terms. |
+| TRELLIS / Apple Silicon port | [Microsoft TRELLIS](https://github.com/microsoft/TRELLIS), [trellis-mac-mps](https://github.com/vinayapathak/trellis-mac-mps) | Advanced separately provisioned runtime and weights, not a bundled installer. |
+| DINO models | [DINOv2](https://github.com/facebookresearch/dinov2), applicable model cards | Encoder terms are separate from reconstruction model terms. |
+| Segmentation models | [rembg](https://github.com/danielgatis/rembg) and selected weight provider | A rembg package license does not automatically cover every optional model weight. |
+| Apple frameworks | [Vision](https://developer.apple.com/documentation/vision), [RealityKit](https://developer.apple.com/documentation/realitykit), [Foundation Models](https://developer.apple.com/documentation/foundationmodels) | OS/SDK components subject to Apple's terms; framework binaries are not redistributed. |
+| Python geometry libraries | NumPy, SciPy, trimesh, Matplotlib, Pillow, Manifold | Installed separately using requirements files; retain their upstream notices. |
+
+Review current model/provider terms before downloading or using assets, especially for commercial use. Public reference datasets and personal photos used during development are not part of this distribution.
