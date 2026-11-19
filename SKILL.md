@@ -48,7 +48,9 @@ Retain source appearance before converting it to native paint/part assignments. 
 
 Complete native Manual Match with the actual spools, review achievable colors, recompute purge values and save a matched project. Use the compatible installed Color Mixing process. `scripts/u1_slice.py` applies single-filament overrides and therefore rejects unmatched, generic/unrecognized, converted and multi-filament/mixed 3MF projects. Slice those natively without erasing mappings. Conversion strips stale G-code; a fresh U1 slice is required.
 
-The local slicer never sends a print job. A completed slice still needs layer/support/seam/clearance and material mapping review. If UI automation fails, make bounded attempts, preserve errors and provide a concrete project plus the required manual step.
+The local slicer never sends a print job. It checks explicit extrusion centerlines across all layers against the resolved profile polygon, exclusions and height, then renders actual toolpath top/isometric views with support and brim colors. Unsupported geometry/state or out-of-bounds paths prevents `slice_completed`; retain failed reports. For native multicolor exports, run `scripts/u1_gcode.py` with that project's resolved machine JSON without changing its mappings. Read [toolpath scope and commands](docs/PRINT_GUIDE.md#toolpath-review): custom start/end blocks, macros, bead width and toolhead clearance remain outside these checks.
+
+A completed slice still needs layer/support/seam/clearance and material mapping review. If UI automation fails, make bounded attempts, preserve errors and provide a concrete project plus the required manual step.
 
 ## Deliver
 

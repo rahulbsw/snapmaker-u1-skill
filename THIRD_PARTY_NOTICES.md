@@ -5,6 +5,7 @@ The MIT license in this repository covers its original skill instructions, helpe
 | Optional component | Source and attribution | Notes |
 |---|---|---|
 | Snapmaker Orca | [Snapmaker/OrcaSlicer](https://github.com/Snapmaker/OrcaSlicer) | Separate application and profiles; retain upstream licenses. No printer G-code or user calibration project is distributed here. |
+| U1 toolkit reference | [bbolinger/snapmaker-u1-toolkit](https://github.com/bbolinger/snapmaker-u1-toolkit/tree/c66284ce990fa71ccf969cae517fbd3b0c780450) | Feature-colored toolpath review inspiration; no upstream runtime or printer-control code is bundled. MIT, copyright 2026 Brent Bolinger; [notice retained](references/licenses/snapmaker-u1-toolkit-MIT.txt). |
 | Bambu-to-U1 backend | [thadius83/bambu-to-snapmaker-u1](https://github.com/thadius83/bambu-to-snapmaker-u1) | PolyForm Noncommercial 1.0.0 at the pinned revision. The wrapper does not make that backend commercially permissive. |
 | TripoSR code | [VAST-AI-Research/TripoSR](https://github.com/VAST-AI-Research/TripoSR) | MIT; copyright Tripo AI & Stability AI. Weights are obtained separately from [stabilityai/TripoSR](https://huggingface.co/stabilityai/TripoSR). |
 | Modly | [lightningpixel/modly](https://github.com/lightningpixel/modly) | MIT; copyright Lightning Pixel. Extensions and models have separate terms. |

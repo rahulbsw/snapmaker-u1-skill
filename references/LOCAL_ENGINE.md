@@ -85,7 +85,7 @@ Use Full Spectrum Manual Match and review the application colors, then save and 
 
 This adapter resolves installed U1 preset inheritance, snapshots the settings, applies a documented process-normalization compatibility fix, runs an isolated local CLI slice and records estimates/transcripts. It never sends a print job. Select the actual material family; Generic PLA is only a provisional test choice. `--mixing` selects the dedicated installed mixing process, but does not assign virtual-color recipes. A single-color STL slice does not validate a Full Spectrum result.
 
-The report distinguishes executable slicing from human review of layers, colors, supports and clearances. Keep failed run transcripts. Do not use a stale G-code/project file from a previous run as evidence of success.
+The report distinguishes native export (`slicer_output_completed`) from a completed slice with passing toolpath checks and previews (`slice_completed`). Every distinct exported G-code is reviewed across all layers against the resolved machine polygon, excluded area and height. Reports include line numbers for failures and actual sliced-path previews, including supports/brim. Failed or unsupported paths prevent completion even when Orca exits zero. See [toolpath review](../docs/PRINT_GUIDE.md#toolpath-review) for scope, standalone review of native multicolor exports and limits. Human layer/color/clearance review is still required. Keep failed run transcripts. Do not use a stale G-code/project file from a previous run as evidence of success.
 
 ## Finish in Snapmaker Orca
 

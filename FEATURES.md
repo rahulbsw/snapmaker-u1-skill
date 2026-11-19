@@ -9,6 +9,7 @@
 | Print-intent planning | Draft / Normal / Strong / Flexible; optional Apple language helper | Suggestions are not calibrated printer settings |
 | Mesh validation | Bounds, degenerates, edges, winding/components and serialized-export checks | No universal strength, thickness, self-intersection or fit certification |
 | Previews | Actual mesh contact sheet and offline orbit viewer | Display sampling is labeled; a render does not validate printing |
+| Sliced toolpath review | All-layer extrusion-centerline polygon/exclusion/height checks; feature-colored top/isometric PNGs from G-code | Custom blocks and firmware macros excluded; no bead-width or collision certification; supported arc checks need a convex bed without exclusions |
 | Color preparation | Target color regions, generic 3MF and native paint export | Fresh single-filament template required; physical mixes not generated |
 | U1 Full Spectrum | Matching/calibration workflow | Native Orca matching with actual spools and color review required |
 | Bambu projects | Guarded wrapper, source/mapping audits, stale G-code removal | Separate noncommercial backend; up to four ordinary colors with bijective routing |

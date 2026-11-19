@@ -18,6 +18,11 @@ import subprocess
 import sys
 import zipfile
 
+try:
+    from . import u1_gcode
+except ImportError:
+    import u1_gcode
+
 
 DEFAULT_APP = Path("/Applications/Snapmaker Orca.app")
 MACHINE_NAME = "Snapmaker U1 (0.4 nozzle)"
@@ -106,6 +111,10 @@ def prepare_profiles(profiles_dir: str | Path, *, intent: str = "normal", materi
         if presets[kind].get("instantiation") != "true":
             raise SliceError(f"{name!r} is an abstract preset, not an instantiated selection")
     machine, process, filament = (presets[kind] for kind in ("machine", "process", "filament"))
+    try:
+        u1_gcode.machine_region(machine)
+    except ValueError as exc:
+        raise SliceError(f"invalid machine build region: {exc}") from exc
     for kind, preset in [("process", process), ("filament", filament)]:
         compatible = preset.get("compatible_printers", [])
         if not isinstance(compatible, list) or compatible and MACHINE_NAME not in compatible:
@@ -197,19 +206,32 @@ def parse_gcode_metadata(text: str) -> dict:
     return estimates
 
 
-def _gcode_artifacts(run_dir: Path) -> list[dict]:
+def _gcode_artifacts(run_dir: Path, machine: dict) -> list[dict]:
     artifacts = []
+    reviews = {}
+
+    def artifact(path, member, data):
+        text = data.decode("utf-8", errors="replace")
+        digest = hashlib.sha256(data).hexdigest()
+        if digest not in reviews:
+            directory = run_dir / f"toolpaths_{len(reviews) + 1:04d}"
+            try:
+                reviews[digest] = u1_gcode.review_gcode(text, machine, directory)
+            except (ValueError, OSError) as exc:
+                reviews[digest] = {"passed": False, "review_completed": False, "error": str(exc), "ready_to_print": False}
+        review = reviews[digest]
+        return {"path": str(path), "archive_member": member, "bytes": len(data), "sha256": digest,
+                "has_extrusion_moves": bool(review.get("segments_checked")),
+                "estimates": parse_gcode_metadata(text), "toolpath_review": review}
+
     for path in sorted(run_dir.rglob("*.gcode")):
-        text = path.read_text(encoding="utf-8", errors="replace")
-        artifacts.append({"path": str(path), "archive_member": None, "bytes": path.stat().st_size, "has_extrusion_moves": bool(re.search(r"^G[01]\s+[^;\n]*\bE[-+\d.]", text, flags=re.MULTILINE)), "estimates": parse_gcode_metadata(text)})
+        artifacts.append(artifact(path, None, path.read_bytes()))
     project = run_dir / "project.3mf"
     if project.is_file() and zipfile.is_zipfile(project):
         with zipfile.ZipFile(project) as archive:
             for name in sorted(archive.namelist()):
                 if name.lower().endswith(".gcode"):
-                    data = archive.read(name)
-                    text = data.decode("utf-8", errors="replace")
-                    artifacts.append({"path": str(project), "archive_member": name, "bytes": len(data), "has_extrusion_moves": bool(re.search(r"^G[01]\s+[^;\n]*\bE[-+\d.]", text, flags=re.MULTILINE)), "estimates": parse_gcode_metadata(text)})
+                    artifacts.append(artifact(project, name, archive.read(name)))
     return artifacts
 
 
@@ -283,10 +305,13 @@ def slice_model(input_path: str | Path, output_dir: str | Path, *, app_path: str
                 execution_error = str(exc)
                 stream.write(f"\nAdapter could not execute slicer: {exc}\n")
     text = transcript.read_text(encoding="utf-8", errors="replace")
-    gcodes = _gcode_artifacts(run_dir) if not dry_run else []
+    gcodes = _gcode_artifacts(run_dir, presets["machine"]) if not dry_run else []
     project = run_dir / "project.3mf"
-    completed = return_code == 0 and project.is_file() and zipfile.is_zipfile(project) and any(item["has_extrusion_moves"] for item in gcodes)
-    status = "prepared_not_executed" if dry_run else "slice_completed_review_required" if completed else "slice_timed_out" if timed_out else "slice_failed"
+    exported = return_code == 0 and project.is_file() and zipfile.is_zipfile(project) and bool(gcodes)
+    paths_passed = bool(gcodes) and all(item["toolpath_review"].get("passed") for item in gcodes)
+    previews_generated = bool(gcodes) and all("previews" in item["toolpath_review"] for item in gcodes)
+    completed = exported and paths_passed and previews_generated
+    status = "prepared_not_executed" if dry_run else "slice_completed_review_required" if completed else "toolpath_review_failed" if exported else "slice_timed_out" if timed_out else "slice_failed"
     errors = [line for line in text.splitlines() if re.search(r"\berror\b|segmentation fault|not compatible|failed", line, re.IGNORECASE)][-30:]
     report = {
         "schema_version": 1,
@@ -295,6 +320,9 @@ def slice_model(input_path: str | Path, output_dir: str | Path, *, app_path: str
         "selection": selection,
         "execution": {"command": argv, "return_code": return_code, "timeout_seconds": timeout, "timed_out": timed_out, "execution_error": execution_error, "dry_run": dry_run, "run_dir": str(run_dir), "error_lines": errors},
         "slice_completed": completed,
+        "slicer_output_completed": exported,
+        "toolpath_validation_passed": paths_passed,
+        "toolpath_previews_generated": previews_generated,
         "slicing_verified": False,
         "ready_to_print": False,
         "printing_or_upload_performed": False,

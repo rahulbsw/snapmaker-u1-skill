@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -13,12 +14,20 @@ import zipfile
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "u1_slice.py"
+sys.path.insert(0, str(SCRIPT.parent))
 SPEC = importlib.util.spec_from_file_location("u1_slice", SCRIPT)
 slicer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(slicer)
 
 
 class SliceAdapterTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Load font discovery before mocking the slicer's shared subprocess module.
+        import matplotlib
+        matplotlib.use("Agg")
+        from matplotlib import pyplot
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -32,7 +41,7 @@ class SliceAdapterTests(unittest.TestCase):
         binary.touch()
         self.source = self.root / "mesh.stl"
         self.source.write_text("fixture; subprocess is mocked")
-        self.write("machine", "parent-machine", nozzle_diameter=["0.4"] * 4, printable_height="270.05")
+        self.write("machine", "parent-machine", nozzle_diameter=["0.4"] * 4, printable_height="270.05", printable_area=["0x0", "270x0", "270x270", "0x270"])
         self.write("machine", slicer.MACHINE_NAME, inherits="parent-machine", instantiation="true", name=slicer.MACHINE_NAME)
         self.write("process", "parent-process", sparse_infill_density="15%", wall_loops="2", wipe_tower_filament="0", enable_prime_tower="1")
         for name in {*slicer.INTENT_PRESETS.values(), slicer.MIXING_PRESET}:
@@ -199,13 +208,15 @@ class SliceAdapterTests(unittest.TestCase):
     def test_success_requires_real_gcode_and_still_requires_review(self):
         def execute(argv, **kwargs):
             directory = Path(kwargs["cwd"])
-            code = "; filament used [g] = 2.5, 0\n; filament used [mm] = 822.4, 0\n; estimated printing time (normal mode) = 1h 2m 3s\nG1 X1 Y1 E0.5\n"
+            code = "; filament used [g] = 2.5, 0\n; filament used [mm] = 822.4, 0\n; estimated printing time (normal mode) = 1h 2m 3s\nG90\nM83\nG0 X1 Y1 Z0.2\nG1 X2 Y1 E0.5\n"
             with zipfile.ZipFile(directory / "project.3mf", "w") as archive:
                 archive.writestr("Metadata/plate_1.gcode", code)
             return subprocess.CompletedProcess(argv, 0)
         with mock.patch.object(slicer.subprocess, "run", side_effect=execute) as run:
             report = slicer.slice_model(self.source, self.root / "out", app_path=self.app, profiles_dir=self.vendor)
         self.assertTrue(report["slice_completed"])
+        self.assertTrue(report["toolpath_validation_passed"])
+        self.assertTrue(report["toolpath_previews_generated"])
         self.assertFalse(report["slicing_verified"])
         self.assertFalse(report["ready_to_print"])
         estimates = report["artifacts"]["gcode"][0]["estimates"]
@@ -226,6 +237,34 @@ class SliceAdapterTests(unittest.TestCase):
         self.assertIn("not compatible", Path(first["artifacts"]["transcript"]).read_text())
         self.assertNotEqual(first["execution"]["run_dir"], second["execution"]["run_dir"])
         self.assertTrue(Path(first["artifacts"]["report"]).is_file())
+
+    def test_zero_exit_with_out_of_bounds_or_unsupported_paths_fails_review(self):
+        for tail in ['G1 X271 E1', 'G20\nG1 X3 E1']:
+            def execute(argv, **kwargs):
+                directory = Path(kwargs['cwd'])
+                code = 'M83\nG0 X1 Y1 Z1\n' + tail
+                (directory / 'plate_1.gcode').write_text(code)
+                with zipfile.ZipFile(directory / 'project.3mf', 'w') as archive:
+                    archive.writestr('Metadata/plate_1.gcode', code)
+                return subprocess.CompletedProcess(argv, 0)
+            with self.subTest(tail=tail), mock.patch.object(slicer.subprocess, 'run', side_effect=execute):
+                report = slicer.slice_model(self.source, self.root / 'out', app_path=self.app, profiles_dir=self.vendor)
+            self.assertTrue(report['slicer_output_completed'])
+            self.assertFalse(report['slice_completed'])
+            self.assertFalse(report['toolpath_validation_passed'])
+            self.assertEqual(report['status'], 'toolpath_review_failed')
+            artifacts = report['artifacts']['gcode']
+            self.assertEqual(len(artifacts), 2)
+            self.assertEqual(artifacts[0]['toolpath_review'], artifacts[1]['toolpath_review'])
+            self.assertEqual(len(list(Path(report['execution']['run_dir']).glob('toolpaths_*'))), 1)
+
+    def test_missing_printable_region_fails_before_execution_or_output(self):
+        self.write('machine', 'parent-machine', nozzle_diameter=['0.4'] * 4)
+        with mock.patch.object(slicer.subprocess, 'run') as run:
+            with self.assertRaisesRegex(slicer.SliceError, 'printable_area'):
+                slicer.slice_model(self.source, self.root / 'out', app_path=self.app, profiles_dir=self.vendor)
+        run.assert_not_called()
+        self.assertFalse((self.root / 'out').exists())
 
     def test_zero_exit_without_gcode_does_not_claim_slice_and_timeout_is_saved(self):
         with mock.patch.object(slicer.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)):

@@ -10,6 +10,7 @@ A Codex skill for creating parametric 3D designs and preparing meshes for the **
 
 - **CAD and mesh preparation:** editable designs, explicit scale/orientation, encoded STL/GLB checks, actual mesh views and offline orbit previews.
 - **U1 print planning:** Draft, Normal, Strong and Flexible intent; material/support/plate tradeoffs and actual slice estimates. The CLI adapter currently targets a **0.4 mm U1 nozzle** and never starts a print.
+- **Toolpath review:** all-layer extrusion-centerline checks against the resolved build polygon, exclusions and height, plus top/isometric previews of actual sliced supports, brim and model features. Unsupported motion or failed checks prevent slice completion; [scope and standalone use](docs/PRINT_GUIDE.md#toolpath-review).
 - **Color:** source appearance → target regions → native painted 3MF → Orca Full Spectrum matching. Export does not invent calibrated recipes. STL contains no color; an untextured GLB also contains no color to recover.
 - **Bambu/MakerWorld:** optional, separately installed converter for editable projects with up to four ordinary logical filaments. Source hashes and mapping reports are preserved; fresh slicing is required.
 - **Apple tools:** optional local Vision background removal, Foundation Models intent planning and Object Capture for overlapping real photo sets.
@@ -56,7 +57,7 @@ python3 scripts/u1_mesh_check.py your-model.stl
 .venv/bin/python scripts/u1_slice.py outputs/prepared/prepared.stl --output-dir outputs/slicing --material 'Generic PLA'
 ```
 
-Outputs include provenance and explicit review status. Confirm the **actual** plate, nozzle, spool and layer preview before printing. Single-filament CLI overrides intentionally refuse mixed/calibrated or unrecognized projects.
+Outputs include provenance, `toolpath-review.json` and `toolpaths-top.png` / `toolpaths-3d.png` for each distinct G-code artifact. `slice_completed` requires a successful slicer export, passing path checks and generated previews. `slicer_output_completed` separately records native export success. Confirm the **actual** plate, nozzle, spool and layer preview before printing. Single-filament CLI overrides intentionally refuse mixed/calibrated or unrecognized projects.
 
 For an original CAD example, run `.venv/bin/python examples/moon-jewelry-dish/build_dish.py`; see [its instructions](examples/moon-jewelry-dish/README.md). It creates local STL/GLB and validation reports, with no cloud service.
 
