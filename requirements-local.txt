@@ -1,6 +1,6 @@
 # Optional TripoSR inference environment; not required for core mesh tools.
 -r requirements-core.txt
-torch==2.6.0
+torch==2.13.0
 torchvision==0.21.0
 transformers==4.38.2
 huggingface-hub==0.25.2
