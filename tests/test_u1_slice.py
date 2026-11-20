@@ -161,6 +161,48 @@ class SliceAdapterTests(unittest.TestCase):
         self.assertEqual(report["status"], "prepared_not_executed")
         self.assertFalse(report["slice_completed"])
 
+    def test_project_and_preset_commands_are_rejected_before_output_or_launch(self):
+        source = self.root / 'command-bearing.3mf'
+        for key in slicer.u1_3mf.POST_PROCESS:
+            with self.subTest(key=key):
+                with zipfile.ZipFile(source, 'w') as archive:
+                    archive.writestr('Metadata/project_settings.config', json.dumps({'filament_settings_id': ['PLA'], key: ['AUDIT_INERT_MARKER']}))
+                original = source.read_bytes()
+                with mock.patch.object(slicer.subprocess, 'run') as run, self.assertRaisesRegex(ValueError, 'Post-processing'):
+                    slicer.slice_model(source, self.root / 'out', app_path=self.app, profiles_dir=self.vendor)
+                run.assert_not_called()
+                self.assertEqual(source.read_bytes(), original)
+                self.assertFalse((self.root / 'out').exists())
+        self.write('process', slicer.INTENT_PRESETS['normal'], instantiation='true', post_process=['AUDIT_INERT_MARKER'])
+        with mock.patch.object(slicer.subprocess, 'run') as run, self.assertRaisesRegex(ValueError, 'Post-processing'):
+            slicer.slice_model(self.source, self.root / 'out', app_path=self.app, profiles_dir=self.vendor)
+        run.assert_not_called()
+        self.assertFalse((self.root / 'out').exists())
+
+    def test_oversized_metadata_and_invalid_marker_stop_before_launch(self):
+        source = self.root / 'invalid-metadata.3mf'
+        for member, data in [('Metadata/project_settings.config', b' ' * (slicer.u1_3mf.MAX_SETTINGS_BYTES + 1)),
+                             ('Metadata/u1_target_colors.json', b'[]')]:
+            with self.subTest(member=member):
+                with zipfile.ZipFile(source, 'w', zipfile.ZIP_DEFLATED) as archive:
+                    archive.writestr(member, data)
+                with mock.patch.object(slicer.subprocess, 'run') as run, self.assertRaises(ValueError):
+                    slicer.slice_model(source, self.root / 'out', app_path=self.app, profiles_dir=self.vendor)
+                run.assert_not_called()
+                self.assertFalse((self.root / 'out').exists())
+
+    def test_artifact_limit_failure_is_preserved_as_a_failed_report(self):
+        def execute(argv, **kwargs):
+            with zipfile.ZipFile(Path(kwargs['cwd']) / 'project.3mf', 'w') as archive:
+                archive.writestr('Metadata/plate_1.gcode', 'M83\nG0 X1 Y1 Z1\nG1 X2 E1\n' * 3)
+            return subprocess.CompletedProcess(argv, 0)
+        with mock.patch.object(slicer.u1_3mf, 'MAX_MEMBER_BYTES', 32), mock.patch.object(slicer.subprocess, 'run', side_effect=execute):
+            report = slicer.slice_model(self.source, self.root / 'out', app_path=self.app, profiles_dir=self.vendor)
+        self.assertFalse(report['slice_completed'])
+        self.assertFalse(report['ready_to_print'])
+        self.assertIn('Cannot review', report['execution']['execution_error'])
+        self.assertEqual(json.loads(Path(report['artifacts']['report']).read_text()), report)
+
     def test_invalid_3mf_archive_fails_before_output_or_execution(self):
         source = self.root / "invalid.3mf"
         source.write_bytes(b"not a 3MF archive")

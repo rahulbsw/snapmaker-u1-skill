@@ -1,6 +1,6 @@
 # Optional read-only U1 printer check
 
-Use `scripts/u1_printer_check.py` when the user requests printer status or a comparison with loaded physical spools. It runs on the Mac using Python's standard library and connects only to an explicit private/loopback IP. The user may provide the address or authorize obtaining it from their selected Orca device details. No automatic discovery, hostname resolution, cloud requests, uploads, print controls or G-code execution are implemented. Model/project contents are read locally and never sent to the printer.
+Use `scripts/u1_printer_check.py` when the user requests printer status or a comparison with loaded physical spools. It uses Python's standard library on macOS, Windows and Linux and connects only to an explicit private/loopback IP. The user may provide the address or authorize obtaining it from their selected Orca device details. No automatic discovery, hostname resolution, cloud requests, uploads, print controls or G-code execution are implemented. Model/project contents are read locally and never sent to the printer.
 
 The helper takes a single snapshot using at most three fixed HTTP GETs: printer info, available objects and a query of supported status objects, including `filament_detect` and `print_task_config` when available. It reports printer/print state, whether idle is confirmed, progress, bed/four-nozzle temperatures and four physical tools' filament data. Missing objects, absent metadata and disabled sensors remain unknown. The helper does not claim a successful connection is print readiness.
 
@@ -24,7 +24,20 @@ Each slot keeps the existing `material`, `color`, `manufacturer` and `metadata_a
 
 These are cached metadata reads; the helper does not trigger a tag scan, edit or refresh. Reports can contain card identifiers and local addresses. Store them privately in ignored `outputs/`, not in tests, releases or screenshots shared publicly.
 
-For a service requiring an API key, provide `SNAPMAKER_API_KEY` through the local process environment. Do not put it in a command argument, project, report or Git-tracked config. The helper sends it only as `X-Api-Key`. This direct HTTP interface is intended for the trusted local network; it does not implement HTTPS or login/token acquisition. Do not bypass authentication to make a check pass.
+## API keys and HTTPS
+
+For a service requiring an API key, provide `SNAPMAKER_API_KEY` through the local process environment. Do not put it in a command argument, project, report or Git-tracked config. The helper sends it only as `X-Api-Key`; **keys are refused over HTTP by default**, including on loopback. HTTP without credentials remains available for an authorized trusted-LAN target.
+
+If that local service already supports HTTPS, select it explicitly:
+
+```sh
+python3 scripts/u1_printer_check.py --host 192.168.1.123 --https
+python3 scripts/u1_printer_check.py --host 192.168.1.123 --https --ca-file /path/to/trusted-ca.pem
+```
+
+`--https` defaults to port 443; `--port` can select the actual configured port. Certificate-chain and IP-address verification remain enabled. A private CA must be independently trusted, and the service certificate must cover the specified IP. Invalid certificates, TLS failures and bad CA files stop the request; there is no automatic HTTP fallback or certificate-verification bypass. The helper does not enable TLS on the printer, install certificates, create a proxy or acquire login tokens.
+
+An HTTP-only printer requiring a key remains usable with `--allow-insecure-api-key`, **only after the user explicitly accepts sending that credential in plaintext to this target**. An agent must not add that flag automatically to silence a transport failure. A private LAN does not encrypt the key; anyone able to observe that traffic may read it. Prefer existing verified HTTPS where available. Do not change printer authentication settings or bypass authentication to make a check pass.
 
 ## Compare an ordinary Orca project
 

@@ -15,10 +15,15 @@ from collections import Counter
 import json
 from pathlib import Path
 import xml.etree.ElementTree as ET
-from zipfile import ZipFile, ZIP_DEFLATED
+from zipfile import ZipFile, ZIP_DEFLATED, BadZipFile
 
 import numpy as np
 from skimage.color import rgb2lab
+
+try:
+    from . import u1_3mf
+except ImportError:
+    import u1_3mf
 
 CORE = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
 MATERIAL = "http://schemas.microsoft.com/3dmanufacturing/material/2015/02"
@@ -30,9 +35,11 @@ TYPES = b'''<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.o
 def load_unmatched_template(template):
     """Reject templates whose physical/virtual color indices must be preserved."""
     with ZipFile(template) as archive:
-        config = json.loads(archive.read("Metadata/project_settings.config"))
+        u1_3mf.validate_archive(archive)
+        config = json.loads(u1_3mf.read_member(archive, "Metadata/project_settings.config"))
     if not isinstance(config, dict):
         raise ValueError("template project settings must be a JSON object")
+    u1_3mf.reject_post_process(config)
     definitions = config.get("mixed_filament_definitions", "")
     if not isinstance(definitions, str) or definitions.strip():
         raise ValueError("template contains existing mixing definitions; preserve the calibrated project and use Full Spectrum Manual Match in Snapmaker Orca. This helper creates fresh unmatched target colors only.")
@@ -52,7 +59,8 @@ def convert(source, template, output):
     # any output: old virtual definitions cannot be rebound to new palette IDs.
     config = load_unmatched_template(template)
     with ZipFile(source) as archive:
-        root = ET.fromstring(archive.read("3D/3dmodel.model"))
+        u1_3mf.validate_archive(archive)
+        root = u1_3mf.parse_xml(u1_3mf.read_member(archive, "3D/3dmodel.model", u1_3mf.MAX_MEMBER_BYTES))
     resources = root.find(f"{{{CORE}}}resources")
     if resources is None:
         raise ValueError("source has no model resources")
@@ -139,7 +147,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         report = convert(args.input, args.template, args.output)
-    except (ValueError, KeyError, OSError) as exc:
+    except (ValueError, KeyError, OSError, ET.ParseError, BadZipFile, RuntimeError, NotImplementedError) as exc:
         parser.exit(2, f"ERROR: {exc}\n")
     print(json.dumps(report, indent=2))
 

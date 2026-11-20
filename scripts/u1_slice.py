@@ -20,9 +20,10 @@ import sys
 import zipfile
 
 try:
-    from . import u1_gcode
+    from . import u1_gcode, u1_3mf
 except ImportError:
     import u1_gcode
+    import u1_3mf
 
 
 DEFAULT_APP = Path("/Applications/Snapmaker Orca.app")
@@ -255,13 +256,16 @@ def _gcode_artifacts(run_dir: Path, machine: dict) -> list[dict]:
                 "estimates": parse_gcode_metadata(text), "toolpath_review": review}
 
     for path in sorted(run_dir.rglob("*.gcode")):
+        if path.stat().st_size > u1_3mf.MAX_MEMBER_BYTES:
+            raise SliceError("G-code exceeds the 512 MiB review limit")
         artifacts.append(artifact(path, None, path.read_bytes()))
     project = run_dir / "project.3mf"
     if project.is_file() and zipfile.is_zipfile(project):
         with zipfile.ZipFile(project) as archive:
+            u1_3mf.validate_archive(archive)
             for name in sorted(archive.namelist()):
                 if name.lower().endswith(".gcode"):
-                    artifacts.append(artifact(project, name, archive.read(name)))
+                    artifacts.append(artifact(project, name, u1_3mf.read_member(archive, name, u1_3mf.MAX_MEMBER_BYTES)))
     return artifacts
 
 
@@ -273,21 +277,27 @@ def slice_model(input_path: str | Path, output_dir: str | Path, *, app_path: str
         if not zipfile.is_zipfile(source):
             raise SliceError("3MF input must be a valid project archive.")
         with zipfile.ZipFile(source) as archive:
+            u1_3mf.validate_archive(archive)
             if "Metadata/u1_conversion.json" in archive.namelist():
                 raise SliceError("This converted project requires review and fresh slicing as a project in Snapmaker Orca. This adapter's single-filament overrides would replace its material and color assignments; use the project workflow in BAMBU_CONVERSION.md.")
             marker = "Metadata/u1_target_colors.json"
-            if marker in archive.namelist() and json.loads(archive.read(marker)).get("requires_manual_match"):
-                raise SliceError("This file contains unmatched logical target colors. Complete Full Spectrum Manual Match and save a calibrated project in Orca before slicing; a provisional single-filament override would lose the target mapping.")
+            if marker in archive.namelist():
+                targets = json.loads(u1_3mf.read_member(archive, marker))
+                if not isinstance(targets, dict):
+                    raise SliceError("Target-color metadata must be a JSON object")
+                if targets.get("requires_manual_match"):
+                    raise SliceError("This file contains unmatched logical target colors. Complete Full Spectrum Manual Match and save a calibrated project in Orca before slicing; a provisional single-filament override would lose the target mapping.")
             settings_member = "Metadata/project_settings.config"
             unknown_project = "Generic or unrecognized 3MF cannot use this single-filament adapter: its color assignments could be replaced. Use the color workflow in FULL_SPECTRUM.md and review the file as a native Snapmaker Orca project."
             if settings_member not in archive.namelist():
                 raise SliceError(unknown_project)
             try:
-                project_settings = json.loads(archive.read(settings_member))
+                project_settings = json.loads(u1_3mf.read_member(archive, settings_member))
             except (ValueError, UnicodeError) as exc:
                 raise SliceError("Cannot read this project's embedded settings.") from exc
             if not isinstance(project_settings, dict):
                 raise SliceError("Embedded project settings must be a JSON object.")
+            u1_3mf.reject_post_process(project_settings)
             filaments = project_settings.get("filament_settings_id", [])
             palette = project_settings.get("filament_colour", [])
             if ((isinstance(filaments, list) and len(filaments) > 1)
@@ -301,6 +311,8 @@ def slice_model(input_path: str | Path, output_dir: str | Path, *, app_path: str
         raise SliceError("timeout must be finite, positive and at most 600 seconds")
     binary, vendor = resolve_slicer(app_path, profiles_dir)
     presets, selection = prepare_profiles(vendor, intent=intent, material=material, mixing=mixing, infill_percent=infill_percent, supports=supports)
+    for preset in presets.values():
+        u1_3mf.reject_post_process(preset)
     destination.mkdir(parents=True, exist_ok=True)
     # A new directory makes stale G-code impossible to mistake for this run.
     index = 1
@@ -332,7 +344,11 @@ def slice_model(input_path: str | Path, output_dir: str | Path, *, app_path: str
                 execution_error = str(exc)
                 stream.write(f"\nAdapter could not execute slicer: {exc}\n")
     text = transcript.read_text(encoding="utf-8", errors="replace")
-    gcodes = _gcode_artifacts(run_dir, presets["machine"]) if not dry_run else []
+    try:
+        gcodes = _gcode_artifacts(run_dir, presets["machine"]) if not dry_run else []
+    except (ValueError, OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError) as exc:
+        gcodes = []
+        execution_error = "Cannot review slicer artifacts: " + str(exc)
     project = run_dir / "project.3mf"
     exported = return_code == 0 and project.is_file() and zipfile.is_zipfile(project) and bool(gcodes)
     paths_passed = bool(gcodes) and all(item["toolpath_review"].get("passed") for item in gcodes)
@@ -340,10 +356,12 @@ def slice_model(input_path: str | Path, output_dir: str | Path, *, app_path: str
     completed = exported and paths_passed and previews_generated
     status = "prepared_not_executed" if dry_run else "slice_completed_review_required" if completed else "toolpath_review_failed" if exported else "slice_timed_out" if timed_out else "slice_failed"
     errors = [line for line in text.splitlines() if re.search(r"\berror\b|segmentation fault|not compatible|failed", line, re.IGNORECASE)][-30:]
+    with source.open("rb") as stream:
+        source_hash = hashlib.file_digest(stream, "sha256").hexdigest()
     report = {
         "schema_version": 1,
         "status": status,
-        "input": {"path": str(source), "sha256": hashlib.sha256(source.read_bytes()).hexdigest()},
+        "input": {"path": str(source), "sha256": source_hash},
         "selection": selection,
         "execution": {"command": argv, "return_code": return_code, "timeout_seconds": timeout, "timed_out": timed_out, "execution_error": execution_error, "dry_run": dry_run, "run_dir": str(run_dir), "error_lines": errors},
         "slice_completed": completed,
@@ -378,7 +396,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         report = slice_model(args.input, args.output_dir, app_path=args.app_path, profiles_dir=args.profiles_dir, intent=args.intent, material=args.material, mixing=args.mixing, timeout=args.timeout, dry_run=args.dry_run, infill_percent=args.infill_percent, supports=args.supports)
-    except (SliceError, OSError) as exc:
+    except (ValueError, OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(report, indent=2, sort_keys=True, allow_nan=False))

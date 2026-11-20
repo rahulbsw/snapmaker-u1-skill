@@ -12,8 +12,14 @@ import math
 import os
 from pathlib import Path
 import re
+import ssl
 from urllib.parse import quote
 import zipfile
+
+try:
+    from . import u1_3mf
+except ImportError:
+    import u1_3mf
 
 MAX_BYTES = 1024 * 1024
 OBJECTS = ('print_stats', 'virtual_sdcard', 'heater_bed', 'extruder', 'extruder1',
@@ -40,7 +46,8 @@ def validate_connection(host, port, timeout):
         raise CheckError('timeout must be finite, positive and at most 10 seconds per request')
 
 
-def get_json(host, port, endpoint, *, objects=(), timeout=5, api_key=None):
+def get_json(host, port, endpoint, *, objects=(), timeout=5, api_key=None,
+             https=False, ca_file=None, allow_insecure_api_key=False):
     """Only three fixed GET routes, no redirects, proxies, uploads or arbitrary paths."""
     validate_connection(host, port, timeout)
     if endpoint not in ENDPOINTS or any(name not in OBJECTS for name in objects):
@@ -52,8 +59,20 @@ def get_json(host, port, endpoint, *, objects=(), timeout=5, api_key=None):
         path += '?' + '&'.join(quote(name, safe='') for name in objects)
     if api_key is not None and (not isinstance(api_key, str) or not api_key.isascii() or any(ord(c) < 33 or ord(c) == 127 for c in api_key)):
         raise CheckError('invalid API key format')
-    connection = http.client.HTTPConnection(str(host), port, timeout=timeout)
+    if type(https) is not bool or type(allow_insecure_api_key) is not bool:
+        raise CheckError('transport options must be booleans')
+    if ca_file is not None and not https:
+        raise CheckError('--ca-file requires --https')
+    if api_key and not https and not allow_insecure_api_key:
+        raise CheckError('API keys require verified HTTPS; HTTP-only devices need explicit --allow-insecure-api-key consent')
+    connection = None
     try:
+        if https:
+            context = ssl.create_default_context(cafile=ca_file)
+            context.set_alpn_protocols(['http/1.1'])
+            connection = http.client.HTTPSConnection(str(host), port, timeout=timeout, context=context)
+        else:
+            connection = http.client.HTTPConnection(str(host), port, timeout=timeout)
         connection.request('GET', path, headers={'Accept': 'application/json', **({'X-Api-Key': api_key} if api_key else {})})
         response = connection.getresponse()
         if response.status != 200:
@@ -71,7 +90,8 @@ def get_json(host, port, endpoint, *, objects=(), timeout=5, api_key=None):
         # Do not echo response bodies, headers, credentials or arbitrary socket errors.
         raise CheckError('printer request failed or returned invalid JSON') from exc
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()
 
 
 def _text(value):
@@ -156,12 +176,13 @@ def project_expected(path, slot_map):
     path = Path(path)
     try:
         with zipfile.ZipFile(path) as archive:
+            u1_3mf.validate_archive(archive)
             if 'Metadata/u1_target_colors.json' in archive.namelist():
                 raise CheckError('target palette is not a physical spool list; use --expected-slots')
             member = archive.getinfo('Metadata/project_settings.config')
             if member.file_size > MAX_BYTES:
                 raise CheckError('project settings exceed 1 MiB')
-            settings = json.loads(archive.read(member))
+            settings = json.loads(u1_3mf.read_member(archive, member.filename, MAX_BYTES))
     except (OSError, KeyError, zipfile.BadZipFile, ValueError, RuntimeError, NotImplementedError) as exc:
         if isinstance(exc, CheckError):
             raise
@@ -191,13 +212,15 @@ def project_expected(path, slot_map):
     return expected
 
 
-def collect_snapshot(host, port=80, *, timeout=5, api_key=None):
-    info = get_json(host, port, 'info', timeout=timeout, api_key=api_key)
-    available = get_json(host, port, 'objects', timeout=timeout, api_key=api_key).get('objects')
+def collect_snapshot(host, port=None, *, timeout=5, api_key=None, https=False, ca_file=None, allow_insecure_api_key=False):
+    port = (443 if https else 80) if port is None else port
+    transport = dict(timeout=timeout, api_key=api_key, https=https, ca_file=ca_file, allow_insecure_api_key=allow_insecure_api_key)
+    info = get_json(host, port, 'info', **transport)
+    available = get_json(host, port, 'objects', **transport).get('objects')
     if not isinstance(available, list) or not all(isinstance(name, str) for name in available):
         raise CheckError('printer returned an invalid object list')
     selected = tuple(name for name in OBJECTS if name in available)
-    status = get_json(host, port, 'query', objects=selected, timeout=timeout, api_key=api_key).get('status') if selected else {}
+    status = get_json(host, port, 'query', objects=selected, **transport).get('status') if selected else {}
     if not isinstance(status, dict) or any(not isinstance(value, dict) for value in status.values()):
         raise CheckError('printer returned invalid object status')
     slots = []
@@ -255,7 +278,10 @@ def compare_slots(snapshot, expected):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', required=True, help='Explicit private/loopback IP address; no network discovery')
-    parser.add_argument('--port', type=int, default=80)
+    parser.add_argument('--port', type=int, help='Default 80 for HTTP or 443 with --https')
+    parser.add_argument('--https', action='store_true', help='Use TLS with certificate and IP-address verification; no HTTP fallback')
+    parser.add_argument('--ca-file', type=Path, help='Trusted CA PEM for an already configured private HTTPS service; requires --https')
+    parser.add_argument('--allow-insecure-api-key', action='store_true', help='Explicitly allow sending SNAPMAKER_API_KEY over plaintext HTTP on a trusted LAN')
     parser.add_argument('--timeout', type=float, default=5, help='Per-request seconds, maximum 10; at most three GETs')
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--project', type=Path, help='Native Orca 3MF with 1–4 ordinary filaments')
@@ -265,8 +291,11 @@ def main(argv=None):
     args = parser.parse_args(argv)
     report = {'schema_version': 1, 'read_only': True, 'ready_to_print': False, 'snapshot_completed': False, 'preflight_passed': None}
     try:
-        validate_connection(args.host, args.port, args.timeout)
-        report['target'] = {'host': args.host, 'port': args.port}
+        port = (443 if args.https else 80) if args.port is None else args.port
+        validate_connection(args.host, port, args.timeout)
+        report['target'] = {'host': args.host, 'port': port, 'scheme': 'https' if args.https else 'http'}
+        if args.ca_file is not None and not args.https:
+            raise CheckError('--ca-file requires --https')
         if bool(args.project) != bool(args.slot_map):
             raise CheckError('--project and --slot-map must be supplied together')
         if args.output and os.path.lexists(args.output):
@@ -276,8 +305,11 @@ def main(argv=None):
         expected = project_expected(args.project, args.slot_map) if args.project else load_expected(args.expected_slots) if args.expected_slots else None
         if args.project or args.expected_slots:
             source = args.project or args.expected_slots
-            report['expectations_source'] = {'kind': 'orca_project' if args.project else 'physical_slots', 'sha256': hashlib.sha256(source.read_bytes()).hexdigest()}
-        snapshot = collect_snapshot(args.host, args.port, timeout=args.timeout, api_key=os.environ.get('SNAPMAKER_API_KEY') or None)
+            with source.open('rb') as stream:
+                source_hash = hashlib.file_digest(stream, 'sha256').hexdigest()
+            report['expectations_source'] = {'kind': 'orca_project' if args.project else 'physical_slots', 'sha256': source_hash}
+        snapshot = collect_snapshot(args.host, port, timeout=args.timeout, api_key=os.environ.get('SNAPMAKER_API_KEY') or None,
+                                    https=args.https, ca_file=args.ca_file, allow_insecure_api_key=args.allow_insecure_api_key)
         report.update(snapshot_completed=True, snapshot=snapshot, status='snapshot_only')
         if expected:
             report['comparison'] = compare_slots(snapshot, expected)

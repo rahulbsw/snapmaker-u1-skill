@@ -25,6 +25,8 @@ Respect the user's local/cloud choice. With `execution_policy: local_only`, keep
 
 Ask only for details that change the result: intended use, dimensions, desired form/body extent, critical fits/loads, actual filament family/nozzle, and whether accessories belong in the model. Preserve an accepted master; keep each new attempt in a fresh job directory.
 
+Printer API keys require verified HTTPS by default. Do not add `--allow-insecure-api-key` unless the user explicitly accepts plaintext credential transport for that target; a local-network authorization alone does not imply that acceptance. Certificate failures must not trigger an HTTP fallback.
+
 ## Images and likeness
 
 Isolate the requested subject and inspect narrow gaps, hair, glasses, hands and clothing. Preserve original photos and preprocessing provenance. Background removal and sharpening do not recover hidden geometry. A single photo leaves the sides and back inferred; request real closer/side/back views when likeness needs them.
@@ -48,6 +50,8 @@ Retain source appearance before converting it to native paint/part assignments. 
 `scripts/u1_orca_colors.py` requires a fresh **single-filament, non-mixed** template. It deliberately rejects calibrated multi-filament templates; use native Orca matching while preserving their recipes. Do not present a job-specific calibrated-project rewrite as a general packaged capability.
 
 Complete native Manual Match with the actual spools, review achievable colors, recompute purge values and save a matched project. Use the compatible installed Color Mixing process. `scripts/u1_slice.py` applies single-filament overrides and therefore rejects unmatched, generic/unrecognized, converted and multi-filament/mixed 3MF projects. Slice those natively without erasing mappings. Conversion strips stale G-code; a fresh U1 slice is required.
+
+Imported templates/projects and selected slicing presets must have no post-processing commands. The helpers reject them before export or execution; remove unwanted commands in a reviewed copy rather than silently bypassing the check. Shared 3MF readers enforce archive/member limits and the color/Bambu XML readers reject DTDs/entities. These checks do not make arbitrary native slicer input safe or replace review of machine/filament G-code.
 
 The local slicer never sends a print job. It checks explicit extrusion centerlines across all layers against the resolved profile polygon, exclusions and height, then renders actual toolpath top/isometric views with support and brim colors. Unsupported geometry/state or out-of-bounds paths prevents `slice_completed`; retain failed reports. For native multicolor exports, run `scripts/u1_gcode.py` with that project's resolved machine JSON without changing its mappings. Read [toolpath scope and commands](docs/PRINT_GUIDE.md#toolpath-review): custom start/end blocks, macros, bead width and toolhead clearance remain outside these checks.
 
