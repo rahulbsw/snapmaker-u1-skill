@@ -59,7 +59,7 @@ class PrinterCheckTests(unittest.TestCase):
         with self.transport([Response({'result': {'state': state}}),
                              Response({'result': {'objects': list(data)}}),
                              Response({'result': {'status': data}})]):
-            return check.collect_snapshot('192.168.1.123', api_key='SYNTHETIC_KEY')
+            return check.collect_snapshot('192.168.1.123', api_key='SYNTHETIC_KEY', allow_insecure_api_key=True)
 
     def project(self, **changes):
         settings = {'filament_settings_id': ['PLA red', 'PLA white'], 'filament_type': ['PLA', 'PLA'],
@@ -86,6 +86,54 @@ class PrinterCheckTests(unittest.TestCase):
         self.assertEqual(self.calls[0][3]['X-Api-Key'], 'SYNTHETIC_KEY')
         self.assertNotIn('SYNTHETIC_KEY', json.dumps(snapshot))
         self.assertEqual(snapshot['temperatures_c']['heater_bed']['temperature'], 23.5)
+
+    def test_plaintext_key_is_blocked_before_connection_unless_explicitly_allowed(self):
+        with mock.patch.object(check.http.client, 'HTTPConnection') as http, mock.patch.object(check.http.client, 'HTTPSConnection') as https:
+            with self.assertRaisesRegex(check.CheckError, 'verified HTTPS'):
+                check.get_json('192.168.1.123', 80, 'info', api_key='SYNTHETIC_KEY')
+            http.assert_not_called()
+            https.assert_not_called()
+        with mock.patch.dict(check.os.environ, {'SNAPMAKER_API_KEY': 'SYNTHETIC_KEY'}), mock.patch.object(check.http.client, 'HTTPConnection') as http:
+            code, report = self.cli(['--host', '192.168.1.123'])
+            self.assertEqual(code, 2)
+            self.assertNotIn('SYNTHETIC_KEY', json.dumps(report))
+            http.assert_not_called()
+
+    def test_https_verifies_peer_and_never_falls_back_to_http(self):
+        with mock.patch.object(check.http.client, 'HTTPSConnection') as https, mock.patch.object(check.http.client, 'HTTPConnection') as http:
+            https.return_value.getresponse.return_value = Response({'result': {'state': 'ready'}})
+            result = check.get_json('192.168.1.123', 443, 'info', https=True, api_key='SYNTHETIC_KEY')
+            self.assertEqual(result['state'], 'ready')
+            context = https.call_args.kwargs['context']
+            self.assertTrue(context.check_hostname)
+            self.assertEqual(context.verify_mode, check.ssl.CERT_REQUIRED)
+            self.assertEqual(https.return_value.request.call_args.kwargs['headers']['X-Api-Key'], 'SYNTHETIC_KEY')
+            https.return_value.request.side_effect = check.ssl.SSLCertVerificationError('SYNTHETIC_KEY')
+            with self.assertRaisesRegex(check.CheckError, 'request failed') as caught:
+                check.get_json('192.168.1.123', 443, 'info', https=True, api_key='SYNTHETIC_KEY')
+            self.assertNotIn('SYNTHETIC_KEY', str(caught.exception))
+            http.assert_not_called()
+
+    def test_https_cli_selects_port_and_ca_without_disabling_verification(self):
+        with mock.patch.object(check, 'collect_snapshot', return_value={}) as collect, mock.patch.dict(check.os.environ, {'SNAPMAKER_API_KEY': 'SYNTHETIC_KEY'}):
+            code, report = self.cli(['--host', '192.168.1.123', '--https', '--ca-file', 'trusted-ca.pem'])
+            self.assertEqual(code, 0)
+            self.assertEqual(collect.call_args.args, ('192.168.1.123', 443))
+            self.assertTrue(collect.call_args.kwargs['https'])
+            self.assertEqual(collect.call_args.kwargs['ca_file'], Path('trusted-ca.pem'))
+            self.assertEqual(report['target']['scheme'], 'https')
+            collect.reset_mock()
+            code, _ = self.cli(['--host', '192.168.1.123', '--allow-insecure-api-key'])
+            self.assertEqual(code, 0)
+            self.assertTrue(collect.call_args.kwargs['allow_insecure_api_key'])
+            collect.reset_mock()
+            code, _ = self.cli(['--host', '192.168.1.123', '--ca-file', 'trusted-ca.pem'])
+            self.assertEqual(code, 2)
+            collect.assert_not_called()
+        with mock.patch.object(check.ssl, 'create_default_context', side_effect=OSError('bad CA')), mock.patch.object(check.http.client, 'HTTPSConnection') as connect:
+            with self.assertRaises(check.CheckError):
+                check.get_json('192.168.1.123', 443, 'info', https=True, ca_file='missing.pem')
+            connect.assert_not_called()
 
     def test_no_arbitrary_endpoint_or_object_can_be_requested(self):
         for endpoint, objects in [('gcode', ()), ('/printer/print/cancel', ()), ('query', ('gcode_macro UNLOAD',)), ('info', ('print_stats',)), ('query', ())]:
@@ -282,7 +330,7 @@ class PrinterCheckTests(unittest.TestCase):
         with mock.patch.object(check, 'collect_snapshot', return_value=snapshot):
             code, report = self.cli(base)
             self.assertEqual(code, 0)
-            self.assertEqual(report['target'], {'host': '192.168.1.123', 'port': 80})
+            self.assertEqual(report['target'], {'host': '192.168.1.123', 'port': 80, 'scheme': 'http'})
             self.assertIsNone(report['preflight_passed'])
             code, report = self.cli(base + ['--project', str(project), '--slot-map', '1:1,2:2'])
             self.assertEqual(code, 0)
@@ -315,7 +363,7 @@ class PrinterCheckTests(unittest.TestCase):
         output = self.root / 'report.json'
         snapshot = self.snapshot()
         with mock.patch.object(check, 'collect_snapshot', return_value=snapshot) as collect, mock.patch.dict(check.os.environ, {'SNAPMAKER_API_KEY': 'SYNTHETIC_KEY'}):
-            code, report = self.cli(['--host', '192.168.1.123', '--output', str(output)])
+            code, report = self.cli(['--host', '192.168.1.123', '--https', '--output', str(output)])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(output.read_text()), report)
         self.assertNotIn('SYNTHETIC_KEY', output.read_text())

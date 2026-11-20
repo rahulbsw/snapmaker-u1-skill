@@ -11,7 +11,7 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import shutil
 import subprocess
@@ -19,6 +19,11 @@ import sys
 import xml.etree.ElementTree as ET
 from xml.parsers import expat
 import zipfile
+
+try:
+    from . import u1_3mf
+except ImportError:
+    import u1_3mf
 
 ROOT = Path(__file__).resolve().parents[1]
 COMMIT = "639b822e2db3b59b0dc7379771f7cdf872b06910"
@@ -28,7 +33,7 @@ SETTINGS = "Metadata/project_settings.config"
 LAYER_COMMANDS = "Metadata/custom_gcode_per_layer.xml"
 MARKER = "Metadata/u1_conversion.json"
 FILAMENT_HOOKS = {"filament_start_gcode", "filament_end_gcode"}
-POST_PROCESS = {"post_process", "post_process_script", "post_process_scripts"}
+POST_PROCESS = u1_3mf.POST_PROCESS
 SLOT_KEYS = {"extruder", "wall_filament", "sparse_infill_filament", "solid_infill_filament", "support_filament", "support_interface_filament", "wipe_tower_filament"}
 HARDWARE_KEYS = {"extruder_offset", "single_extruder_multi_material", "single_extruder_multi_material_priming", "manual_filament_change", "use_relative_e_distances", "use_firmware_retraction"}
 
@@ -90,11 +95,17 @@ def parse_slot_map(text, count):
     return {source - 1: target - 1 for source, target in mapping.items()}
 
 
+def reject_doctype(*_):
+    raise ConversionError("Unsupported XML declarations/entities.")
+
+
 def xml_root(data, name):
     if re.search(br"<!\s*(DOCTYPE|ENTITY)\b", data, re.I):
         raise ConversionError(f"XML declarations/entities are unsupported: {name}")
     try:
-        return ET.fromstring(data)
+        return u1_3mf.parse_xml(data)
+    except ValueError as exc:
+        raise ConversionError(f"XML declarations/entities are unsupported: {name}") from exc
     except ET.ParseError as exc:
         raise ConversionError(f"Malformed XML: {name}") from exc
 
@@ -157,24 +168,16 @@ def audit_build_items(before, after):
 def archive_info(path, filament_count=None):
     """Screen archive structure and local mesh invariants, without claiming topology."""
     with zipfile.ZipFile(path) as archive:
-        members = archive.infolist()
-        names = [item.filename for item in members]
-        if len(set(name.casefold() for name in names)) != len(names):
-            raise ConversionError("Duplicate/case-ambiguous 3MF members are unsupported.")
-        for item in members:
-            # ZipInfo normalizes backslashes on Windows; inspect the raw name.
-            name = item.orig_filename
-            if "\\" in name or "\x00" in name or name.startswith("/") or ".." in PurePosixPath(name).parts or item.flag_bits & 1:
-                raise ConversionError("Unsafe or encrypted 3MF archive member.")
-            if item.file_size > 512 * 1024**2:
-                raise ConversionError("A 3MF member exceeds this adapter's 512 MiB limit.")
-        if sum(item.file_size for item in members) > 2 * 1024**3:
-            raise ConversionError("Uncompressed project exceeds this adapter's 2 GiB limit.")
+        try:
+            u1_3mf.validate_archive(archive)
+        except ValueError as exc:
+            raise ConversionError(str(exc)) from exc
+        names = archive.namelist()
         models = {}
         for name in names:
             if not name.lower().endswith(".model"):
                 continue
-            root = xml_root(archive.read(name), name)
+            root = xml_root(u1_3mf.read_member(archive, name, u1_3mf.MAX_MEMBER_BYTES), name)
             geometry, paints, builds = [], [], []
             vertices = triangles = 0
             for element in root.iter():
@@ -251,6 +254,7 @@ def slot_references(path, count):
             if re.search(br"<!\s*(DOCTYPE|ENTITY)\b", data, re.I):
                 raise ConversionError("Unsupported model-settings XML declarations/entities.")
             parser = expat.ParserCreate()
+            parser.StartDoctypeDeclHandler = reject_doctype
             parts = []
 
             def start(name, attrs):
@@ -280,6 +284,7 @@ def sanitize_model_settings(data):
     if re.search(br"<!\s*(DOCTYPE|ENTITY)\b", data, re.I):
         raise ConversionError("Unsupported model-settings XML declarations/entities.")
     parser = expat.ParserCreate()  # Keep literal names, including Orca extension prefixes.
+    parser.StartDoctypeDeclHandler = reject_doctype
     patches, stack, removed = [], [], []
 
     def tag_end(start):

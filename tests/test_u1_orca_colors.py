@@ -18,6 +18,36 @@ class OrcaColorsTests(unittest.TestCase):
         with ZipFile(path, 'w', ZIP_DEFLATED) as archive:
             archive.writestr('Metadata/project_settings.config', json.dumps(config))
 
+    def test_template_commands_are_rejected_without_touching_inputs_or_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, template, output = (root / name for name in ('source.3mf', 'template.3mf', 'out.3mf'))
+            self.make_source(source)
+            output.write_bytes(b'preserve existing output')
+            for key in colors.u1_3mf.POST_PROCESS:
+                with self.subTest(key=key):
+                    self.write_template(template, {'filament_settings_id': ['PLA'], 'filament_colour': ['#FFFFFF'], key: ['AUDIT_INERT_MARKER']})
+                    originals = [path.read_bytes() for path in (source, template, output)]
+                    with self.assertRaisesRegex(ValueError, 'Post-processing'):
+                        colors.convert(source, template, output)
+                    self.assertEqual([path.read_bytes() for path in (source, template, output)], originals)
+
+    def test_xml_entities_and_large_settings_stop_before_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, template, output = (root / name for name in ('source.3mf', 'template.3mf', 'out.3mf'))
+            self.write_template(template, {'filament_settings_id': ['PLA'], 'filament_colour': ['#FFFFFF']})
+            with ZipFile(source, 'w') as archive:
+                archive.writestr('3D/3dmodel.model', '<!DOCTYPE model [<!ENTITY x "benign">]><model>&x;</model>'.encode('utf-16'))
+            with self.assertRaisesRegex(ValueError, 'entities'):
+                colors.convert(source, template, output)
+            self.assertFalse(output.exists())
+            with ZipFile(template, 'w', ZIP_DEFLATED) as archive:
+                archive.writestr('Metadata/project_settings.config', b' ' * (colors.u1_3mf.MAX_SETTINGS_BYTES + 1))
+            with self.assertRaisesRegex(ValueError, 'read limit'):
+                colors.convert(source, template, output)
+            self.assertFalse(output.exists())
+
     def test_eight_targets_paint_and_no_stale_slice_data(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

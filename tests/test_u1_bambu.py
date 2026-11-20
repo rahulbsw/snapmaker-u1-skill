@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -16,6 +17,7 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'scripts'))
 SPEC = importlib.util.spec_from_file_location("u1_bambu", ROOT / "scripts/u1_bambu.py")
 bambu = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bambu)
@@ -174,6 +176,19 @@ class BambuAdapterTests(unittest.TestCase):
         for xml in [b'<root>', b'<!DOCTYPE root [<!ENTITY x "test">]><root>&x;</root>']:
             with self.subTest(xml=xml), self.assertRaises(bambu.ConversionError):
                 bambu.xml_root(xml, "fixture.xml")
+
+    def test_encoded_doctypes_cannot_bypass_model_or_metadata_guards(self):
+        for encoding in ['utf-8', 'utf-16', 'utf-16-be']:
+            with self.subTest(encoding=encoding):
+                xml = '<!DOCTYPE config [<!ENTITY x "benign">]><config>&x;</config>'.encode(encoding)
+                with self.assertRaises(bambu.ConversionError):
+                    bambu.xml_root(xml, 'fixture.model')
+                with self.assertRaises(bambu.ConversionError):
+                    bambu.sanitize_model_settings(xml)
+                source = synthetic_project(self.root / 'encoded-entities.3mf')
+                replace_members(source, {'Metadata/model_settings.config': xml})
+                with self.assertRaises(bambu.ConversionError):
+                    bambu.slot_references(source, 2)
 
     def test_part_without_mesh_statistics_rejected_before_native_import(self):
         source = synthetic_project(self.root / "synthetic-missing-mesh-stat.3mf")

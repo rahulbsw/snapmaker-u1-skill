@@ -104,6 +104,8 @@ Tests use synthetic inputs and mocked printer HTTP responses; they do not contac
 
 Private photos, generated jobs, runtimes, weights, local configuration, backups and agent state are excluded by `.gitignore`. The public example contains only original CAD source and its rendered preview; no customer portraits, calibration files or printer G-code are bundled.
 
+See the [security review](docs/SECURITY_REVIEW.md) for scanner triage, credential transport, 3MF input checks and remaining trust boundaries. Printer API keys require verified HTTPS by default; HTTP-only authenticated devices require explicit plaintext-transport consent.
+
 ## License and attribution
 
 Original skill code, documentation and CAD example are [MIT licensed](LICENSE). Downloaded engines, weights, slicers and the Bambu converter retain their own terms; see [third-party notices](THIRD_PARTY_NOTICES.md). In particular, the optional Bambu conversion backend uses a noncommercial license. This is an independent project, not an official Snapmaker product.
