@@ -9,7 +9,7 @@ An Agent Skill for creating parametric 3D designs and preparing meshes for the *
 ## What works—and what needs setup
 
 - **CAD and mesh preparation:** editable designs, explicit scale/orientation, encoded STL/GLB checks, actual mesh views and offline orbit previews.
-- **U1 print planning:** Draft, Normal, Strong and Flexible intent; material/support/plate tradeoffs and actual slice estimates. The CLI adapter currently targets a **0.4 mm U1 nozzle** and never starts a print.
+- **U1 print planning:** Draft, Normal, Strong and Flexible intent; all plates in one project, optional plate consolidation and actual all-plate time/filament comparisons. Final delivery defaults to one project and print card; diagnostics stay in `.work/`. The CLI adapter currently targets a **0.4 mm U1 nozzle** and never starts a print.
 - **Toolpath review:** all-layer extrusion-centerline checks against the resolved build polygon, exclusions and height, plus top/isometric previews of actual sliced supports, brim and model features. Unsupported motion or failed checks prevent slice completion; [scope and standalone use](docs/PRINT_GUIDE.md#toolpath-review).
 - **Optional printer check:** read-only local status, temperatures, decoded RFID details and separately labelled configured filament settings, with an explicit physical slot comparison. Uses Python's standard library; no printer controls, uploads or automatic network discovery. [Setup and limits](references/PRINTER_CHECK.md).
 - **Color:** source appearance → target regions → native painted 3MF → Orca Full Spectrum matching. Export does not invent calibrated recipes. STL contains no color; an untextured GLB also contains no color to recover.
@@ -62,16 +62,25 @@ The examples below use `python` from the activated environment; on Windows subst
 python scripts/u1_mesh_check.py your-model.stl
 
 # Mesh views and a local interactive orbit viewer.
-python scripts/u1_preview.py your-model.stl --output-dir outputs/preview --up-axis z
+python scripts/u1_preview.py your-model.stl --output-dir outputs/final/.work/preview --up-axis z
 
 # Preserve aspect ratio, set a height and screen actual exports.
-python scripts/u1_prepare.py your-model.stl --output-dir outputs/prepared --height-mm 100 --up-axis z
+python scripts/u1_prepare.py your-model.stl --output-dir outputs/final/.work/prepared --height-mm 100 --up-axis z
 
 # Requires the separately installed Snapmaker Orca app and matching PLA spool.
-python scripts/u1_slice.py outputs/prepared/prepared.stl --output-dir outputs/slicing --material 'Generic PLA'
+# One project + print card; intermediates are kept under .work/.
+python scripts/u1_project.py outputs/final/.work/prepared/prepared.stl --output-dir outputs/final --material 'Generic PLA'
+
+# Put separate parts into one project and arrange into fewer plates.
+python scripts/u1_project.py body.stl lid.stl --output-dir outputs/assembly
+
+# Existing reviewed U1 project: compare original plates vs global packing.
+python scripts/u1_project.py reviewed-u1.3mf --plates compare --output-dir outputs/optimized
 ```
 
-Outputs include provenance, `toolpath-review.json` and `toolpaths-top.png` / `toolpaths-3d.png` for each distinct G-code artifact. `slice_completed` requires a successful slicer export, passing path checks and generated previews. `slicer_output_completed` separately records native export success. Confirm the **actual** plate, nozzle, spool and layer preview before printing. Single-filament CLI overrides intentionally refuse mixed/calibrated or unrecognized projects.
+The final folder contains `project.3mf`, `PRINT_CARD.md` and `.work/` with provenance and toolpath previews. Use `.work/` for preparation and mesh previews too. [Plate optimization options](docs/PRINT_GUIDE.md#one-project-fewer-plates-fewer-delivery-files) include balanced, time, filament and fewest-plate priorities. Balanced automatically keeps the original unless time, filament and plate count do not worsen. Geometry and strength/quality settings are protected in native-project comparisons; physical equivalence still needs print testing.
+
+`slice_completed` requires a successful all-plate slicer export, passing path checks and generated previews. `slicer_output_completed` separately records native export success. Confirm the **actual** plate, nozzle, spool and layer preview before printing. The low-level single-filament route intentionally refuses mixed/calibrated or unrecognized projects; explicit native preservation avoids overrides. macOS exports require normal app access; the helper blocks known crash-prone Codex seatbelt execution. See [crash and version compatibility handling](docs/PRINT_GUIDE.md#macos-cli-crash-and-compatibility-handling).
 
 For an original CAD example, run `python examples/moon-jewelry-dish/build_dish.py`; see [its instructions](examples/moon-jewelry-dish/README.md). It creates local STL/GLB and validation reports, with no cloud service. For Windows/Linux Orca paths, use the [platform-specific slicing examples](references/PLATFORMS.md#snapmaker-orca).
 

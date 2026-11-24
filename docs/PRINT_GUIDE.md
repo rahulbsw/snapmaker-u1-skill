@@ -39,6 +39,41 @@ Infill supports top surfaces and contributes to stiffness, but walls and orienta
 4. Arrange parts in one plate only when the printable polygon, clearances, support footprints, and print sequence all fit.
 5. Compare sliced filament usage and time across viable orientations in Snapmaker Orca. Include purge waste for multicolor work.
 
+### One project, fewer plates, fewer delivery files
+
+Use `u1_project.py` as the default final-delivery helper. The output folder contains **`project.3mf` and `PRINT_CARD.md`**; detailed settings, attempts, comparisons, G-code and previews stay in `.work/`. Keep editable CAD alongside these when appropriate. Intermediate preparation/preview helpers should also write into `.work/`, not create additional top-level deliveries. Original inputs are preserved in place. Output folders must be fresh (preprocessing under `.work/` is allowed), so an accepted project cannot be overwritten accidentally.
+
+```sh
+# Pack separate dimensioned parts into ONE project, retaining editable objects.
+python scripts/u1_project.py body.stl lid.stl handle.stl \
+  --output-dir outputs/organizer --intent strong --material 'Generic PLA'
+
+# Existing reviewed U1 project: slice the original layout and global packing.
+python scripts/u1_project.py reviewed-u1.3mf --plates compare \
+  --objective balanced --output-dir outputs/optimized
+
+# Explicit alternatives: preserve the current plates, or prioritize fewer plates.
+python scripts/u1_project.py reviewed-u1.3mf --plates keep --output-dir outputs/kept
+python scripts/u1_project.py reviewed-u1.3mf --plates compare \
+  --objective plates --output-dir outputs/fewest-plates
+```
+
+`--plates combine` requests global arrangement directly. Packing uses Orca's actual machine/process settings and may still require several plates. All plates remain in the same project. Multiple independent calibrated 3MF files are not automatically merged: import compatible objects into one native project in Orca first, preserving part/paint assignments. Differing per-plate settings, filament maps or locked plates stop automatic comparison until reviewed. Unmatched Full Spectrum targets still require Manual Match.
+
+For a native U1 0.4 mm project, the helper invokes Orca **without process or filament overrides**. It verifies original settings, mesh/paint data, instance counts, composed orientation/scale/Z position, assembly spacing, and object/plate overrides after export; only whole-object XY placement and tower XY positions may change. Unknown changes prevent promotion. This conservative check may require manual Orca preparation for other project structures. New STL/OBJ parts use the chosen official intent and material profiles and carry no source color calibration.
+
+`balanced` chooses packing only if slicer time, filament and plate count all stay equal or improve, with at least one improvement. `time`, `filament` and `plates` explicitly prioritize that metric and can trade off the others; the card shows both layouts. Estimates sum each plate once, even if loose and embedded G-code copies coexist. Two plates containing identical G-code still count twice. Missing plate data or estimates cannot establish savings. A native failure stops further attempts; a rejected packing result keeps a passing preserved original layout.
+
+Start with layout to avoid lowering quality/strength settings. Keep layer height, perimeter count, wall/top/bottom thickness, infill, supports/interfaces, flow/cooling limits and calibrated colors unchanged. If further savings are needed, compare a few applicable alternatives: shorter support spans with a load-safe orientation, accessible support styles/interfaces, ribs/local reinforcement, or internal infill changes justified by the intended load and top-surface spans. Evaluate those changes separately with layer previews and fit/load coupons as needed. The bundled automatic comparison changes **placement only**; it does not certify equivalent physical strength or surface finish. Fewer plates can add travel, color changes, cooling/adhesion issues or increase the cost of a failed print. Include those risks in selection.
+
+The slicer reports supports, brim and tower usage in its G-code estimates; custom macro purge, startup consumption and real wall-clock time are not independently measured. Do not label these estimates as measured spool consumption or guaranteed savings.
+
+### macOS CLI crash and compatibility handling
+
+Orca's 3MF export initializes AppKit/OpenGL through `glfwInit` to render thumbnails. A restricted Codex seatbelt launch can abort during macOS application registration even after slicing wrote G-code. The helper refuses native execution in that environment before launching; dry runs still work. Use an approved execution with normal app access or run from Terminal. Do not reset user presets, reinstall Orca or repeatedly retry a failed native export as a workaround. An isolated run directory leaves normal Orca configuration untouched.
+
+Snapmaker Orca 2.4.1 also has a legacy CLI version check that can reject its own 2.x exports. `--allow-newer-file` is an explicit compatibility override available on both helpers. Use it only after verifying the project is compatible with the selected installed build (as with a synthetic project exported by that exact build). It does not fix graphics initialization. [Snapmaker's CLI source](https://github.com/Snapmaker/OrcaSlicer/blob/main/src/Snapmaker_Orca.cpp) documents the version-check correction and thumbnail path; native `--help` is the authority for the installed build's flags. Shader/thumbnail errors remain separate from path validation and need inspection in the exported project's native preview.
+
 ## Toolpath review
 
 `scripts/u1_slice.py` automatically checks each distinct external or project-embedded G-code artifact. It checks explicit positive-extrusion movement across **all layers and feature types**, including supports, brim, skirt and prime tower where present. Bounds use the resolved machine's `printable_area`, `bed_exclude_area` and `printable_height`; the nominal bed size is not substituted. Straight paths crossing concave boundaries or excluded polygons also fail.

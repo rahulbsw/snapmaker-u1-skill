@@ -32,6 +32,8 @@ class SliceAdapterTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.dict(slicer.os.environ, {"CODEX_SANDBOX": ""}).start()
         self.vendor = self.root / "profiles"
         for kind in ["machine", "process", "filament"]:
             (self.vendor / kind).mkdir(parents=True)
@@ -260,7 +262,7 @@ class SliceAdapterTests(unittest.TestCase):
         run_dir = self.root / "out with spaces"
         command = slicer.build_command(self.app / "Contents/MacOS/Snapmaker_Orca", self.source, run_dir)
         self.assertEqual(command[command.index("--datadir") + 1], str(run_dir.resolve() / "datadir"))
-        self.assertEqual(command[command.index("--slice") + 1], "1")
+        self.assertEqual(command[command.index("--slice") + 1], "0")
         self.assertIn("--export-3mf", command)
         # Actual Snapmaker Orca CLI concatenates outputdir + '/' + export name.
         # An absolute export name produced run_0001//absolute/path/project.3mf.tmp.

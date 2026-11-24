@@ -13,9 +13,9 @@
 | Color preparation | Target color regions, generic 3MF and native paint export | Fresh single-filament template required; physical mixes not generated |
 | U1 Full Spectrum | Matching/calibration workflow | Native Orca matching with actual spools and color review required |
 | Bambu projects | Guarded wrapper, source/mapping audits, stale G-code removal | Separate noncommercial backend; up to four ordinary colors with bijective routing |
-| Slicing and estimates | Local official U1 0.4 mm profiles, isolated runs, actual G-code estimates | Mixed projects use native project slicing; no printer upload; layer review required |
+| Slicing and estimates | Local official U1 0.4 mm profiles or explicit native-project preservation, all-plate slicing, isolated runs, actual G-code estimates | No printer upload; native compatibility and layer review required; macOS seatbelt export blocked |
 | Optional printer check | Read-only local status, temperatures, decoded RFID details, separate configured filament settings and four-slot comparisons | Explicit authorized target and physical mapping required; missing RFID stays unknown; conflicts need review; no controls, remaining-weight measurement or mix calibration |
-| Filament and plate optimization | Geometry/infill/support/color-change tradeoffs and slice comparisons | No globally optimal packing or guaranteed material savings |
+| Filament and plate optimization | One project with all plates, native global packing, measured original-vs-packed time/material comparison, protected geometry/settings, compact delivery | Layout-only automatic comparison; no global optimum, physical strength guarantee or automatic merging of independent calibrated 3MFs; incomplete estimates cannot establish savings |
 
 CAD and slice checks have been exercised locally. Public tests use synthetic geometry; optional dependencies are not bundled. Physical-print accuracy and portrait likeness are never inferred from automated test success.
 
