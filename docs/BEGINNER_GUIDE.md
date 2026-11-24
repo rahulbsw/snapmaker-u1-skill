@@ -1,0 +1,56 @@
+# First reliable prints on the U1
+
+Use this checklist when starting out. Begin with a small single-color part, then move to large assemblies and Full Spectrum once the basic material/profile combination prints well. The skill prepares projects; starting, stopping and observing the physical printer remain separate actions.
+
+## Choose what matters
+
+Tell the agent the part's size in millimeters, intended use, important fits, and actual filament. Mention heat, outdoors, repeated bending or weight-bearing use because these can change material and orientation choices. For fitted parts, measure the mating part rather than estimating from a photograph. Print a small fit coupon before a large assembly; scaling an entire assembly can alter every clearance.
+
+For a simple indoor decorative part, PLA and **Normal** are useful starting choices. Use a compatible spool preset for temperature, cooling and flow. Do not select a material solely by its color. TPU needs its own handling/profile; materials for heat or outdoor use also need the appropriate printer hardware and environment.
+
+| Setting | What it means | Starting point in this skill |
+|---|---|---|
+| Layer height | Thickness of each printed layer; affects visible stepping and time | Normal uses the installed 0.20 mm U1 process for a 0.4 mm nozzle |
+| Walls | Perimeters around the part; important for usable strength | Normal: 3; Strong: 4 |
+| Infill | Internal support, not an overall strength rating | Normal: 15% gyroid; Strong: 25% gyroid |
+| Supports | Temporary material beneath areas that cannot print reliably in air | Use the preset style first; compare normal and tree where appropriate |
+| Brim | Extra first-layer material around a part to help adhesion | Consider for narrow/tall parts; check it does not close moving gaps |
+
+These starting points do not establish a load rating. Flexible intent retains the dedicated material/process choices. Existing native projects retain their own settings, even if those differ from this table. The print card reports the actual exported settings and any unknowns.
+
+## Prepare the printer and filament
+
+- Confirm the physical nozzle, build plate and loaded material match Orca. Keep spool identities and physical toolhead assignments distinct from virtual Full Spectrum colors.
+- Keep the build surface clean and avoid fingerprints on the printing area. Follow the plate maker's cleaning method, including drying before refitting; check for debris beneath the plate.
+- Complete the manufacturer's setup, bed and multi-toolhead calibration where applicable. After changing a material/profile, use appropriate flow calibration rather than changing several unrelated settings at once.
+- Store filament dry and follow its maker's drying temperatures/times. Increased stringing, rough extrusion or popping should trigger a material-condition check before large print jobs.
+
+Snapmaker's [first-layer guide](https://wiki.snapmaker.com/en/snapmaker_u1/troubleshooting/first_layer_printing_troubleshooting_guide.md) covers plate condition, calibration and a small first-layer test. Follow third-party plate/filament instructions when those differ from the standard setup; avoid beginning with firmware/Z-offset edits.
+
+## Review the sliced project
+
+Open **project.3mf** in Snapmaker Orca. Check size, all plates, spool mapping and the layer preview. STL carries geometry only; it cannot replace a calibrated color project.
+
+- Prefer a stable base and an orientation that avoids pulling loaded features apart along layer boundaries. More infill alone cannot correct every weak orientation or thin connection.
+- Inspect thin pins, clips, embossed text, bridges, isolated starting features and holes. Make sure top layers close and overhangs receive adequate support.
+- Check whether supports can actually be reached and removed, especially in cavities. Keep support contacts away from important visible surfaces when feasible. Tree supports can suit organic shapes; normal supports can suit broad regular overhangs.
+- A separate support-interface filament may improve removal, but use a compatible tested setup. Do not copy zero-gap settings for a special interface material onto ordinary same-material supports. See [Snapmaker's interface guide](https://wiki.snapmaker.com/en/FAQ/Modules_Accessories_Materials/Support_For_PLA_Filament).
+- Check brim, support and tower footprints, and toolhead/sequence clearance. One plate is useful only when it fits and remains practical to print. Different material or bed requirements can justify multiple plates in the same project.
+- Read total time and filament estimates, including support/tower use. Full Spectrum can increase both; keep calibrated color recipes and test a small swatch before a detailed multicolor job. See [the Full Spectrum guide](../references/FULL_SPECTRUM.md).
+
+For curved surfaces, variable layer height can be worth testing separately with layer-preview review; it is not automatically generated by the constrained optimizer. [Snapmaker's surface guide](https://wiki.snapmaker.com/en/snapmaker_u1/troubleshooting/gaps_on_sloped_top_surfaces) explains that workflow.
+
+## Start small and learn from the result
+
+Watch the first layer: adjacent lines should join evenly without loose loops, large gaps or heavy ridges. If the print is failing, stop it through the printer/Orca and resolve the cause before repeating. Let the plate cool before removing the part, then inspect fits, surfaces and connections.
+
+| Problem | Inspect first |
+|---|---|
+| First layer lifts or fails to stick | Plate cleanliness/seating, correct plate/material preset and calibration |
+| Stringing or rough extrusion | Filament condition and the matching temperature/flow profile |
+| Part separates at layers | Load direction, orientation, walls and material/process calibration |
+| Rough support contacts | Orientation, support style and a properly configured interface |
+| Fused hinge or tight fit | Actual clearance, first-layer expansion, brim and support interference |
+| Print takes too long | Compare layouts first, then declared process alternatives; preserve required walls/shells |
+
+Change one cause at a time and record which profile, spool and orientation worked. Passing mesh checks, a successful slice, a visually accepted print and a tested functional part are different milestones. The skill reports those stages separately.

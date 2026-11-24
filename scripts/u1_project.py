@@ -2,7 +2,7 @@
 """Deliver one all-plate Orca project and print card; keep diagnostics in .work.
 
 Compare an existing reviewed U1 project's original layout with global packing.
-Only XY placement may change. No quality/strength setting is relaxed to win.
+Layout-only by default; process alternatives require explicit constraints.
 """
 from __future__ import annotations
 
@@ -19,10 +19,11 @@ import sys
 import zipfile
 
 try:
-    from . import u1_3mf, u1_slice
+    from . import u1_3mf, u1_slice, u1_optimize
 except ImportError:
     import u1_3mf
     import u1_slice
+    import u1_optimize
 
 CORE = '{http://schemas.microsoft.com/3dmanufacturing/core/2015/02}'
 PLACEMENT_SETTINGS = {'wipe_tower_x', 'wipe_tower_y'}
@@ -39,14 +40,14 @@ def _canonical(node):
             (node.text or '').strip(), tuple(_canonical(child) for child in node))
 
 
-def project_signature(path):
+def project_signature(path, *, require_mergeable=True):
     """Conservative signature: reject unknown changes rather than erase them."""
     with zipfile.ZipFile(path) as archive:
         u1_3mf.validate_archive(archive)
         settings = json.loads(u1_3mf.read_member(archive, 'Metadata/project_settings.config'))
         u1_3mf.reject_post_process(settings)
         config = u1_3mf.parse_xml(u1_3mf.read_member(archive, 'Metadata/model_settings.config', u1_3mf.MAX_MEMBER_BYTES))
-        resources, instances, models, groups = [], [], {}, []
+        resources, instances, models, groups, positions = [], [], {}, [], []
         for name in sorted(archive.namelist()):
             if name.lower().endswith('.model'):
                 model = u1_3mf.parse_xml(u1_3mf.read_member(archive, name, u1_3mf.MAX_MEMBER_BYTES))
@@ -92,21 +93,27 @@ def project_signature(path):
                     raise ValueError('empty build assembly')
                 anchor_x, anchor_y = leaves[0][-2:]
                 groups.append(tuple(leaf[:-2] + (round(leaf[-2]-anchor_x, 8), round(leaf[-1]-anchor_y, 8)) for leaf in leaves))
+                positions.append((groups[-1], round(anchor_x, 8), round(anchor_y, 8)))
         objects = tuple(_canonical(item) for item in sorted(config.findall('object'), key=lambda item: item.get('id', '')))
-        plates = []
+        plates, plate_states = [], []
         for plate in config.findall('plate'):
             if not plate.findall('model_instance'):
                 continue
-            if plate.find("metadata[@key='locked'][@value='true']") is not None:
+            if require_mergeable and plate.find("metadata[@key='locked'][@value='true']") is not None:
                 raise ValueError('unlock the plates in a reviewed copy before optimization')
             # Different per-plate bed/process/material overrides cannot safely
             # be folded together; leave that decision to native Orca review.
             plates.append(tuple(_canonical(item) for item in plate
                                 if item.tag != 'model_instance' and not
                                 (item.tag == 'metadata' and item.get('key') in PLATE_LABELS)))
+            def meta(key, node=plate):
+                entry = node.find(f"metadata[@key='{key}']")
+                return entry.get('value', '') if entry is not None else ''
+            plate_states.append((meta('plater_id'), meta('locked') or 'false', plates[-1],
+                                 tuple(sorted(tuple((entry.get('key'), entry.get('value')) for entry in instance.findall('metadata') if entry.get('key') in {'object_id', 'instance_id'}) for instance in plate.findall('model_instance')))))
         if not instances or not plates:
             raise ValueError('project must contain native build instances and nonempty plates')
-        if len(set(plates)) != 1:
+        if require_mergeable and len(set(plates)) != 1:
             raise ValueError('plates have different overrides or material maps; reconcile them in Orca before combining')
         auxiliary = {}
         for name in archive.namelist():
@@ -122,15 +129,19 @@ def project_signature(path):
                 auxiliary[name] = hashlib.file_digest(stream, 'sha256').hexdigest()
         return {'settings': {k: v for k, v in settings.items() if k not in PLACEMENT_SETTINGS},
                 'resources': tuple(resources), 'instances': Counter(groups),
-                'objects': objects, 'plate_overrides': plates[0], 'auxiliary': auxiliary}
+                'objects': objects, 'plate_overrides': tuple(sorted(set(plates))), 'auxiliary': auxiliary,
+                'positions': Counter(positions), 'plate_states': tuple(sorted(plate_states))}
 
 
-def preservation_check(original, candidate):
-    before, after = project_signature(original), project_signature(candidate)
-    changed = [key for key in before['settings'] if before['settings'][key] != after['settings'].get(key)]
+def preservation_check(original, candidate, *, arrange=True, allowed_settings=()):
+    before = project_signature(original, require_mergeable=arrange)
+    after = project_signature(candidate, require_mergeable=arrange)
+    changed = [key for key in before['settings'] if key not in allowed_settings and before['settings'][key] != after['settings'].get(key)]
     changed += [key for key in ('resources', 'instances', 'objects', 'plate_overrides', 'auxiliary') if before[key] != after[key]]
-    return {'passed': not changed, 'changed': changed,
-            'scope': 'Original project settings, geometry, paint, instances, XYZ orientation/scale/Z height and object/plate overrides; only XY translations and tower XY placement are allowed. Not a mechanical strength or surface-finish test.'}
+    if not arrange:
+        changed += [key for key in ('positions', 'plate_states') if before[key] != after[key]]
+    return {'passed': not changed, 'changed': changed, 'allowed_setting_changes': sorted(allowed_settings),
+            'scope': 'Original project settings, geometry, paint, instances, XYZ orientation/scale/Z height and object/plate overrides; XY placement and explicitly listed process fields may change; protected data must remain intact. Not a mechanical strength or surface-finish test.'}
 
 
 def choose_layout(baseline, combined, *, objective='balanced', preserved=True):
@@ -157,12 +168,94 @@ def choose_layout(baseline, combined, *, objective='balanced', preserved=True):
         'keep', 'Kept original layout: combined candidate did not improve the chosen objective. Fewer plates alone do not establish time/material savings.')
 
 
+def write_print_card(destination, result, reports):
+    lines = ['# U1 print card', '', result['reason'], '',
+             f"Objective: {result['objective']}. Selected: {result['selected_layout'] or 'none'}.", '',
+             '| Candidate | Plates | Time (min) | Filament (g) | Slice / preservation / constraints |',
+             '|---|---:|---:|---:|---|']
+    def state(value):
+        return 'passed' if value is True else 'FAILED' if value is False else 'not evaluated'
+    for name, report in reports.items():
+        totals = report.get('plate_totals') or {}
+        minutes, grams = totals.get('duration_seconds'), totals.get('filament_grams')
+        check = result['checks'][name]
+        statuses = ' / '.join([state(report.get('slice_completed')), state(check['preservation'].get('passed')), state(check['constraints'].get('passed'))])
+        lines.append(f"| {name} | {totals.get('plate_count', 'unknown')} | {f'{minutes/60:.2f}' if minutes is not None else 'unknown'} | {f'{grams:.2f}' if grams is not None else 'unknown'} | {statuses} |")
+    def display(value):
+        if value is None:
+            return 'Unknown'
+        if isinstance(value, list):
+            return ', '.join(display(item) for item in value) or 'None'
+        words = {'not_checked': 'Not checked', 'not_verified': 'Not verified',
+                 'no_definitions_detected': 'No mixing definitions detected',
+                 'definitions_present_unverified': 'Mixing definitions present; physical match unverified',
+                 'tree(auto)': 'Tree (automatic)', 'normal(auto)': 'Normal (automatic)'}
+        return words.get(str(value), str(value)).replace('|', '\\|').replace('\n', ' ')
+    selected = result['selected_layout']
+    if selected:
+        summary = reports[selected].get('effective_settings')
+        if summary is None:
+            summary = u1_slice.project_settings_summary(reports[selected]['artifacts']['project'])
+        result['effective_settings'] = summary
+        lines += ['', '## Actual exported settings', '']
+        if summary:
+            for label, key in [('Machine', 'machine'), ('Nozzles (mm)', 'nozzle_mm'), ('Bed', 'bed_type'),
+                               ('Logical filament profiles', 'logical_filament_profiles'), ('Material families', 'material_families'),
+                               ('Configured colors', 'configured_colors'), ('Full Spectrum', 'full_spectrum'),
+                               ('Loaded-spool match', 'loaded_spool_match'), ('Physical color match', 'physical_color_match')]:
+                lines.append(f"- {label}: {display(summary.get(key))}")
+            labels = {'layer_height': 'Layer height (mm)', 'initial_layer_print_height': 'First layer (mm)',
+                      'wall_loops': 'Wall loops', 'sparse_infill_density': 'Infill density', 'sparse_infill_pattern': 'Infill pattern',
+                      'top_shell_layers': 'Top layers', 'top_shell_thickness': 'Top minimum thickness (mm)',
+                      'bottom_shell_layers': 'Bottom layers', 'bottom_shell_thickness': 'Bottom minimum thickness (mm)',
+                      'enable_support': 'Supports enabled', 'support_type': 'Support style',
+                      'support_filament': 'Support filament index', 'support_interface_filament': 'Interface filament index',
+                      'print_sequence': 'Print sequence', 'enable_prime_tower': 'Prime tower enabled', 'brim_type': 'Brim style'}
+            lines += ['', '| Global setting | Exported value |', '|---|---|']
+            for key, label in labels.items():
+                value = summary['process'].get(key)
+                if key in {'enable_support', 'enable_prime_tower'} and isinstance(value, str) and value in {'0', '1'}:
+                    value = 'Yes' if value == '1' else 'No'
+                if key in {'support_filament', 'support_interface_filament'} and value == '0':
+                    value = 'Default/model material; confirm native mapping'
+                lines.append(f"| {label} | {display(value)} |")
+            lines += ['', 'Global shell-thickness overrides of 0 use the configured layer count. Per-layer preview determines the actual surfaces.']
+            if summary['object_override_keys']:
+                lines.append('Per-object process overrides exist; inspect them in Orca before relying on the global table.')
+            lines.append('Dimensions and critical fits: confirm the actual model size in Orca; no physical fit test has been performed.')
+        else:
+            lines.append('Exported settings unavailable; do not infer them from the intent label.')
+        baseline = next(iter(reports.values())).get('plate_totals') or {}
+        final = reports[selected].get('plate_totals') or {}
+        if all(row.get(key) is not None for row in (baseline, final) for key in ('duration_seconds', 'filament_grams')):
+            lines += ['', f"Estimated difference from first candidate: {baseline['duration_seconds']-final['duration_seconds']} seconds and {baseline['filament_grams']-final['filament_grams']:.2f} g saved (negative means increased)."]
+    lines += ['', '## Validation and changes', '']
+    for name, check in result['checks'].items():
+        changes = check['requested_process_changes']
+        if changes:
+            lines.append(f"- {name} requested changes: "+', '.join(f'{key}: {value}' for key, value in changes.items()))
+        if check['preservation'].get('passed') is False:
+            lines.append(f"- {name} preservation FAILED: "+str(check['preservation'].get('error') or check['preservation'].get('changed')))
+        if check['constraints'].get('passed') is False:
+            lines.append(f"- {name} constraints FAILED: "+'; '.join(check['constraints'].get('reasons', [])))
+    lines += ['', 'Detailed values, source hashes, allowed changes and requirement checks are retained in the diagnostics report.', '']
+    for notice in result['notices']:
+        lines.append(f'- {notice}')
+    lines += ['', 'Layer height, walls, shell thickness, build orientation, dimensions, color recipes and flow/speed limits are protected. Only the explicitly declared infill/support alternatives may change in process optimization. Review their support access, surface finish and suitability for the intended load.', '',
+              'Estimates sum all reported plates and include supports/brim/tower reported by Orca. Macro-only purge and actual wall-clock/spool consumption are not independently measured. Toolpath checks do not certify bead/toolhead clearance, adhesion or mechanical strength. Physical printing, load testing, spool identity and color matching remain unverified.', '',
+              'Diagnostics, source hashes and actual toolpath previews: [.work/project.json](.work/project.json). Each candidate links to its slicing report; previews are referenced there.', '']
+    (destination/'PRINT_CARD.md').write_text('\n'.join(lines), encoding='utf-8')
+
+
 def create_project(inputs, output_dir, *, plate_mode=None, objective='balanced', app_path=None,
-                   profiles_dir=None, allow_newer_file=False, intent='normal', material='Generic PLA', timeout=600):
+                   profiles_dir=None, allow_newer_file=False, intent=None, material=None, supports=None,
+                   timeout=600, constraints_path=None):
     sources = [Path(path).resolve() for path in inputs]
     if not sources:
         raise ValueError('at least one input is required')
     native = len(sources) == 1 and sources[0].suffix.lower() == '.3mf'
+    if native and any(value is not None for value in (intent, material, supports)):
+        raise ValueError('native projects retain their settings; --intent/--material/--supports apply only to new meshes')
     mode = plate_mode or ('compare' if native else 'combine')
     if mode not in {'compare', 'keep', 'combine'}:
         raise ValueError('plate_mode must be compare, keep or combine')
@@ -170,61 +263,101 @@ def create_project(inputs, output_dir, *, plate_mode=None, objective='balanced',
         raise ValueError('invalid optimization objective')
     if not native and (mode != 'combine' or any(p.suffix.lower() not in {'.stl', '.obj'} for p in sources)):
         raise ValueError('use STL/OBJ parts to create a combined project, or one native U1 3MF for keep/compare')
-    # Front-load conservative guards, before launching Orca or creating outputs.
+    policy = u1_optimize.load_constraints(constraints_path) if constraints_path else None
+    notices, packing_blocker = [], None
     if native and mode != 'keep':
-        project_signature(sources[0])
+        try:
+            project_signature(sources[0])
+        except ValueError as exc:
+            if mode == 'combine':
+                raise
+            packing_blocker = str(exc)
+            notices.append('Packing skipped; original plates retained: '+packing_blocker)
     destination = Path(output_dir).resolve()
-    work = destination / '.work'
+    work = destination/'.work'
     if (destination.exists() and any(path.name != '.work' for path in destination.iterdir())
-            or work.is_symlink() or work.exists() and not work.is_dir()
-            or (work / 'project.json').exists()):
+            or work.is_symlink() or work.exists() and not work.is_dir() or (work/'project.json').exists()):
         raise ValueError('choose an empty output directory or one containing only .work preprocessing; accepted projects are never overwritten')
+    layouts = ['keep', 'combine'] if mode == 'compare' and not packing_blocker else ['keep'] if mode == 'compare' else [mode]
+    if policy:
+        layouts = layouts[:policy['max_candidates']]
+    for layout in [*layouts, 'variants', 'process-inputs']:
+        target = work/layout
+        if target.is_symlink() or not target.resolve().is_relative_to(destination):
+            raise ValueError('working directories cannot escape the job folder')
     destination.mkdir(parents=True, exist_ok=True)
-    reports, checks = {}, {}
-    for layout in (['keep', 'combine'] if mode == 'compare' else [mode]):
-        report = u1_slice.slice_model(sources, work / layout, preserve_project=native,
-            arrange=layout == 'combine', allow_newer_file=allow_newer_file, app_path=app_path, profiles_dir=profiles_dir,
-            intent=intent, material=material, timeout=timeout)
-        reports[layout] = report
-        if native and report['slice_completed']:
+    reports, checks, selected, stopped = {}, {}, None, False
+
+    def evaluate(name, paths, *, reference=None, arrange=False, changes=None, constraint_baseline=None):
+        nonlocal selected, stopped
+        if (work/name).is_symlink() or not (work/name).resolve().is_relative_to(destination):
+            raise ValueError('candidate working directory cannot escape the job folder')
+        report = u1_slice.slice_model(paths, work/name, preserve_project=reference is not None,
+            arrange=arrange, allow_newer_file=allow_newer_file, app_path=app_path, profiles_dir=profiles_dir,
+            intent=intent or 'normal', material=material or 'Generic PLA', supports=supports or 'auto', timeout=timeout)
+        reports[name] = report
+        preserved = {'passed': None, 'scope': 'New mesh import; no native round-trip reference.'}
+        constraints = {'passed': None, 'scope': 'No process optimization constraints requested.'}
+        if report['slice_completed']:
             try:
-                checks[layout] = preservation_check(sources[0], report['artifacts']['project'])
+                if reference is not None:
+                    preserved = preservation_check(reference, report['artifacts']['project'], arrange=arrange, allowed_settings=tuple(changes or {}))
+                if changes:
+                    actual = u1_optimize.read_settings(report['artifacts']['project'])
+                    mismatched = [key for key, value in changes.items() if actual.get(key) != value]
+                    if mismatched:
+                        preserved = {'passed': False, 'error': 'Export did not retain the requested process values', 'changed': mismatched}
+
+                if policy:
+                    constraints = u1_optimize.constraint_check(report['artifacts']['project'], policy, baseline=constraint_baseline)
             except (ValueError, OSError, zipfile.BadZipFile) as exc:
-                checks[layout] = {'passed': False, 'error': str(exc)}
-        # A native failure gets one attempt, not a second crash/export loop.
-        if not report['slice_completed'] or (native and not checks.get(layout, {}).get('passed')):
+                preserved = {'passed': False, 'error': str(exc)}
+        eligible = report['slice_completed'] and preserved.get('passed') is not False and constraints.get('passed') is not False
+        checks[name] = {'eligible': eligible, 'preservation': preserved, 'constraints': constraints,
+                        'requested_process_changes': changes or {}, 'reference': str(reference) if reference else None}
+        if eligible:
+            if selected is None or choose_layout(reports[selected], report, objective=objective)[0] == 'combine':
+                selected = name
+        if not report['slice_completed'] or preserved.get('passed') is False:
+            stopped = True
+        if not eligible:
+            notices.append(f'{name} was not eligible; inspect its validation details before printing.')
+        if report.get('execution', {}).get('error_lines'):
+            notices.append(f'{name}: native diagnostic messages are recorded in the slicing report; inspect the native preview.')
+        return eligible
+
+    for layout in layouts:
+        eligible = evaluate(layout, sources, reference=sources[0] if native else None, arrange=layout == 'combine',
+                            constraint_baseline=sources[0] if native else None)
+        if stopped or not eligible and layout == layouts[0]:
             break
-    if mode == 'compare':
-        selected, reason = choose_layout(reports['keep'], reports.get('combine'), objective=objective,
-            preserved=all(check.get('passed') for check in checks.values()) and len(checks) == 2)
-    else:
-        selected = mode if reports[mode]['slice_completed'] and checks.get(mode, {'passed': True})['passed'] else None
-        reason = 'Requested layout sliced; review required.' if selected else 'Requested layout failed slicing or preservation checks.'
-    # Even the retained layout must preserve the original model/settings.
-    if selected and native and not checks.get(selected, {}).get('passed'):
-        selected, reason = None, 'Native round trip changed protected data; no final project promoted.'
-    final = destination / 'project.3mf'
+    # Process changes are opt-in and limited to explicitly listed values. Every
+    # variant starts from the same accepted layout, with geometry/recipes intact.
+    if policy and selected and not stopped and len(reports) < policy['max_candidates']:
+        reference = Path(reports[selected]['artifacts']['project'])
+        baseline_settings = u1_optimize.read_settings(reference)
+        for name, changes in u1_optimize.variants(baseline_settings, policy):
+            if len(reports) >= policy['max_candidates']:
+                break
+            variant = u1_optimize.write_variant(reference, work/'process-inputs'/f'{name}.3mf', changes)
+            evaluate(name, [variant], reference=reference, changes=changes, constraint_baseline=reference)
+            if stopped:
+                break
+    final = destination/'project.3mf'
     if selected:
         shutil.copy2(reports[selected]['artifacts']['project'], final)
+    reason = ('Selected the best eligible candidate found for the chosen objective; native layer review required.'
+              if selected else 'No candidate passed the required checks; no final project was promoted.')
     result = {'status': 'project_created_review_required' if selected else 'project_failed',
-        'selected_layout': selected, 'objective': objective, 'reason': reason,
+        'selected_layout': selected, 'objective': objective, 'reason': reason, 'notices': notices,
         'project': str(final) if selected else None, 'ready_to_print': False,
-        'physical_strength_or_quality_tested': False, 'preservation': checks,
-        'candidates': {key: {'slice_completed': value['slice_completed'], 'totals': value['plate_totals'],
-                              'report': value['artifacts']['report']} for key, value in reports.items()}}
+        'physical_strength_or_quality_tested': False, 'checks': checks,
+        'preservation': {name: check['preservation'] for name, check in checks.items()},
+        'candidates': {name: {'slice_completed': report['slice_completed'], 'totals': report['plate_totals'],
+                            'report': report['artifacts']['report']} for name, report in reports.items()}}
+    write_print_card(destination, result, reports)
     work.mkdir(exist_ok=True)
-    (work / 'project.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
-    lines = ['# U1 print card', '', reason, '', f'Objective: {objective}. Selected: {selected or "none"}.', '',
-             '| Layout | Plates | Slicer time (min) | Filament (g) | Checks |',
-             '|---|---:|---:|---:|---|']
-    for key, value in reports.items():
-        totals = value['plate_totals'] or {}
-        minutes = totals.get('duration_seconds')
-        lines.append(f'| {key} | {totals.get("plate_count", "unknown")} | {round(minutes / 60, 2) if minutes is not None else "unknown"} | {totals.get("filament_grams", "unknown")} | {"slice passed" if value["slice_completed"] else "failed"} |')
-    lines += ['', 'Print settings and source geometry are retained for native projects; new meshes use the selected official intent/material presets. No layer-height, wall, infill, support, color, purge or flow reduction was used to win this layout comparison.', '',
-              'Estimates cover all reported plates, including supports/brim/tower reported by Orca. Macro-only purge and real wall-clock consumption are not independently measured. Inspect support access, seams, thin features, cooling, adhesion, tower/toolhead clearance and actual spool/color matching in Orca. No physical print or strength test performed.', '',
-              'Diagnostics and previews: [.work/project.json](.work/project.json). Working files are retained for diagnosis; no old user files were deleted.', '']
-    (destination / 'PRINT_CARD.md').write_text('\n'.join(lines), encoding='utf-8')
+    (work/'project.json').write_text(json.dumps(result, indent=2)+'\n', encoding='utf-8')
     return result
 
 
@@ -237,13 +370,15 @@ def main():
     parser.add_argument('--allow-newer-file', action='store_true', help='explicit version-check override after verifying project/build compatibility')
     parser.add_argument('--app-path', type=Path)
     parser.add_argument('--profiles-dir', type=Path)
-    parser.add_argument('--intent', choices=list(u1_slice.INTENT_PRESETS), default='normal')
-    parser.add_argument('--material', default='Generic PLA')
+    parser.add_argument('--constraints', type=Path, help='explicit process alternatives and required global limits; at most six total slices')
+    parser.add_argument('--supports', choices=['auto', 'off', 'tree', 'normal'], default=None, help='new meshes only')
+    parser.add_argument('--intent', choices=list(u1_slice.INTENT_PRESETS), default=None, help='new meshes only')
+    parser.add_argument('--material', default=None, help='new meshes only')
     parser.add_argument('--timeout', type=float, default=600)
     args = parser.parse_args()
     try:
         result = create_project(args.inputs, args.output_dir, plate_mode=args.plates, objective=args.objective,
-            app_path=args.app_path, profiles_dir=args.profiles_dir, allow_newer_file=args.allow_newer_file, intent=args.intent, material=args.material, timeout=args.timeout)
+            app_path=args.app_path, profiles_dir=args.profiles_dir, allow_newer_file=args.allow_newer_file, intent=args.intent, material=args.material, supports=args.supports, timeout=args.timeout, constraints_path=args.constraints)
     except (ValueError, OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError) as exc:
         print(f'ERROR: {exc}', file=sys.stderr)
         return 2

@@ -246,11 +246,26 @@ class SliceAdapterTests(unittest.TestCase):
         self.assertEqual(process["wall_loops"], "4")
         self.assertEqual(process["sparse_infill_density"], "25%")
         self.assertEqual(process["enable_support"], "1")
-        self.assertEqual(process["support_type"], "tree(auto)")
+        self.assertEqual(process["support_type"], "normal(auto)")
         off, _ = slicer.prepare_profiles(self.vendor, supports="off")
         self.assertEqual(off["process"]["enable_support"], "0")
         self.assertNotIn("process_flow_support", process)
         self.assertIn("561", selection["crash_reference"])
+
+    def test_intent_plan_matches_applied_walls_infill_and_pattern(self):
+        import u1_prepare
+        for intent in ['draft', 'normal', 'strong']:
+            with self.subTest(intent=intent):
+                profiles, _ = slicer.prepare_profiles(self.vendor, intent=intent)
+                plan = u1_prepare._print_plan(intent, 'PLA', None)
+                self.assertEqual(int(profiles['process']['wall_loops']), plan['walls']['recommended_perimeters'])
+                self.assertEqual(profiles['process']['sparse_infill_pattern'], plan['infill']['recommended_pattern'])
+                self.assertEqual(float(profiles['process']['sparse_infill_density'].rstrip('%')), plan['infill']['recommended_percent'])
+        tree, _ = slicer.prepare_profiles(self.vendor, supports='tree')
+        self.assertEqual(tree['process']['support_type'], 'tree(auto)')
+        self.assertEqual(tree['process']['enable_support'], '1')
+        normal, _ = slicer.prepare_profiles(self.vendor, supports='normal')
+        self.assertEqual(normal['process']['enable_support'], '1')
 
     def test_mixing_selects_dedicated_profile_without_assigning_ratios(self):
         presets, selection = slicer.prepare_profiles(self.vendor, mixing=True)

@@ -83,6 +83,22 @@ class ProjectTests(unittest.TestCase):
         self.assertTrue(project.preservation_check(source, normalized)['passed'])
         self.assertFalse(project.preservation_check(source, moved_part)['passed'])
 
+    def test_keep_accepts_locked_or_differently_mapped_plates(self):
+        source = self.fixture()
+        with zipfile.ZipFile(source) as archive:
+            members = {name: archive.read(name) for name in archive.namelist()}
+        members['Metadata/model_settings.config'] = members['Metadata/model_settings.config'].replace(b'<plate>', b'<plate><metadata key="locked" value="true"/>').replace(b'value="1 2"', b'value="2 1"', 1)
+        with zipfile.ZipFile(source, 'w') as archive:
+            for name, data in members.items(): archive.writestr(name, data)
+        for mode in ['keep', 'compare']:
+            with self.subTest(mode=mode), mock.patch.object(slicer, 'slice_model', return_value=self.report(path=source)) as run:
+                result = project.create_project([source], self.root/mode, plate_mode=mode)
+            self.assertEqual(result['selected_layout'], 'keep')
+            self.assertTrue(result['preservation']['keep']['passed'])
+            run.assert_called_once()
+        moved = self.fixture('translated.3mf', x=50)
+        self.assertFalse(project.preservation_check(self.fixture('plain.3mf'), moved, arrange=False)['passed'])
+
     def test_balanced_requires_non_worsening_time_material_and_plates(self):
         baseline = self.report()
         self.assertEqual(project.choose_layout(baseline, self.report(1, 10, 500))[0], 'combine')

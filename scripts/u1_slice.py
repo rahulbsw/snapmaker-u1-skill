@@ -22,9 +22,11 @@ import zipfile
 
 try:
     from . import u1_gcode, u1_3mf
+    from .u1_settings import INTENT_INFILL, INTENT_WALLS, INTENT_PATTERN
 except ImportError:
     import u1_gcode
     import u1_3mf
+    from u1_settings import INTENT_INFILL, INTENT_WALLS, INTENT_PATTERN
 
 
 DEFAULT_APP = Path("/Applications/Snapmaker Orca.app")
@@ -134,8 +136,8 @@ def prepare_profiles(profiles_dir: str | Path, *, intent: str = "normal", materi
         raise SliceError("intent must be draft, normal, strong or flexible")
     if infill_percent is not None and (not math.isfinite(infill_percent) or not 0 <= infill_percent <= 100):
         raise SliceError("infill_percent must be finite and between 0 and 100")
-    if supports not in {"auto", "off"}:
-        raise SliceError("supports must be auto or off")
+    if supports not in {"auto", "off", "tree", "normal"}:
+        raise SliceError("supports must be auto, off, tree or normal")
     process_name = MIXING_PRESET if mixing else INTENT_PRESETS[intent]
     presets, provenance = {}, {}
     for kind, name in [("machine", MACHINE_NAME), ("process", process_name), ("filament", material)]:
@@ -172,17 +174,18 @@ def prepare_profiles(profiles_dir: str | Path, *, intent: str = "normal", materi
     # Supplying the selected machine's identical array retains prime-tower
     # semantics and avoids that null dereference without disabling priming.
     process["nozzle_diameter"] = list(nozzles)
-    process["enable_support"] = "1" if supports == "auto" else "0"
-    process["support_type"] = "tree(auto)"
+    process["enable_support"] = "0" if supports == "off" else "1"
+    process["support_type"] = {"tree": "tree(auto)", "normal": "normal(auto)"}.get(supports, process.get("support_type", "normal(auto)"))
     applied = {"enable_support": process["enable_support"], "support_type": process["support_type"]}
-    default_infill = {"draft": 8.0, "normal": 15.0, "strong": 25.0, "flexible": None}[intent]
+    default_infill = INTENT_INFILL[intent]
     chosen_infill = default_infill if infill_percent is None else infill_percent
     if chosen_infill is not None:
         process["sparse_infill_density"] = f"{chosen_infill:g}%"
         applied["sparse_infill_density"] = process["sparse_infill_density"]
-    if intent == "strong":
-        process["wall_loops"] = "4"
-        applied["wall_loops"] = "4"
+    for key, value in [("wall_loops", INTENT_WALLS[intent]), ("sparse_infill_pattern", INTENT_PATTERN[intent])]:
+        if value is not None:
+            process[key] = str(value)
+            applied[key] = str(value)
     process["print_settings_id"] = process_name
     filament["filament_settings_id"] = [material]
     machine["printer_settings_id"] = MACHINE_NAME
@@ -193,7 +196,7 @@ def prepare_profiles(profiles_dir: str | Path, *, intent: str = "normal", materi
         "filament": material,
         "standard_flow_collapsed_keys": collapsed,
         "intent_overrides": applied,
-        "supports": {"mode": supports, "type": "tree(auto)", "preview_reviewed": False},
+        "supports": {"mode": supports, "type": process["support_type"], "preview_reviewed": False},
         "crash_workaround": "Process-only normalization receives nozzle_diameter copied unchanged from the selected machine; wipe_tower_filament and priming remain enabled as specified by the official preset.",
         "crash_reference": "https://github.com/Snapmaker/OrcaSlicer/pull/561/files",
         "mixing": {"requested": mixing, "dedicated_preset_selected": mixing, "ratios_assigned": False, "color_mapping_verified": False},
@@ -324,6 +327,38 @@ def project_totals(project, artifacts):
             "scope": "Slicer G-code estimates summed once per plate, including material/toolpaths reported by Orca; startup macro consumption and wall-clock time are not independently measured."}
 
 
+PROCESS_SUMMARY_KEYS = (
+    "layer_height", "initial_layer_print_height", "wall_loops", "sparse_infill_density", "sparse_infill_pattern",
+    "top_shell_layers", "top_shell_thickness", "bottom_shell_layers", "bottom_shell_thickness",
+    "enable_support", "support_type", "support_style", "support_interface_top_layers",
+    "support_interface_bottom_layers", "support_filament", "support_interface_filament", "print_sequence",
+    "enable_prime_tower", "brim_type", "brim_width", "outer_wall_speed", "filament_max_volumetric_speed")
+
+
+def project_settings_summary(path):
+    """Read actual exported settings; presence is not spool/color calibration."""
+    with zipfile.ZipFile(path) as archive:
+        u1_3mf.validate_archive(archive)
+        if "Metadata/project_settings.config" not in archive.namelist():
+            return None
+        settings = json.loads(u1_3mf.read_member(archive, "Metadata/project_settings.config"))
+        u1_3mf.reject_post_process(settings)
+        overrides = []
+        member = "Metadata/model_settings.config"
+        if member in archive.namelist():
+            config = u1_3mf.parse_xml(u1_3mf.read_member(archive, member, u1_3mf.MAX_MEMBER_BYTES))
+            overrides = sorted({entry.get("key") for obj in config.findall("object")
+                                for entry in obj.iter("metadata") if entry.get("key") in PROCESS_SUMMARY_KEYS})
+        return {"source": "exported_project", "machine": settings.get("printer_settings_id"),
+                "nozzle_mm": settings.get("nozzle_diameter"), "bed_type": settings.get("curr_bed_type"),
+                "logical_filament_profiles": settings.get("filament_settings_id"),
+                "material_families": settings.get("filament_type"), "configured_colors": settings.get("filament_colour"),
+                "process": {key: settings.get(key) for key in PROCESS_SUMMARY_KEYS},
+                "object_override_keys": overrides, "loaded_spool_match": "not_checked",
+                "full_spectrum": "definitions_present_unverified" if settings.get("mixed_filament_definitions") else "no_definitions_detected",
+                "physical_color_match": "not_verified"}
+
+
 def slice_model(input_path, output_dir: str | Path, *, preserve_project: bool = False, arrange: bool = False, allow_newer_file: bool = False, app_path: str | Path | None = None, profiles_dir: str | Path | None = None, intent: str = "normal", material: str = "Generic PLA", mixing: bool = False, timeout: float = 600, dry_run: bool = False, infill_percent: float | None = None, supports: str = "auto") -> dict:
     sources = [Path(path).resolve() for path in (input_path if isinstance(input_path, (list, tuple)) else [input_path])]
     if not sources:
@@ -435,8 +470,9 @@ def slice_model(input_path, output_dir: str | Path, *, preserve_project: bool = 
     previews_generated = bool(gcodes) and all("previews" in item["toolpath_review"] for item in gcodes)
     try:
         totals = project_totals(project, gcodes) if exported else None
+        effective_settings = project_settings_summary(project) if exported else None
     except (ValueError, OSError, zipfile.BadZipFile) as exc:
-        totals = None
+        totals, effective_settings = None, None
         execution_error = "Cannot verify all plates: " + str(exc)
     completed = exported and paths_passed and previews_generated and bool(totals and totals["all_plates_sliced"])
     status = "prepared_not_executed" if dry_run else "slice_completed_review_required" if completed else "toolpath_review_failed" if exported else "slice_timed_out" if timed_out else "slice_failed"
@@ -453,6 +489,7 @@ def slice_model(input_path, output_dir: str | Path, *, preserve_project: bool = 
         "plate_totals": totals,
         "arrange_requested": arrange,
         "selection": selection,
+        "effective_settings": effective_settings,
         "execution": {"command": argv, "return_code": return_code, "timeout_seconds": timeout, "timed_out": timed_out, "execution_error": execution_error, "dry_run": dry_run, "run_dir": str(run_dir), "error_lines": errors},
         "slice_completed": completed,
         "slicer_output_completed": exported,
@@ -483,7 +520,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--material", default="Generic PLA", help="exact installed Snapmaker filament preset name")
     parser.add_argument("--mixing", action="store_true", help="select the official 0.10 mm Color Mixing process; does not assign colors or ratios")
     parser.add_argument("--infill-percent", type=float, default=None)
-    parser.add_argument("--supports", choices=["auto", "off"], default="auto", help="auto enables the official tree(auto) support mode; layer/support preview still requires review")
+    parser.add_argument("--supports", choices=["auto", "off", "tree", "normal"], default="auto", help="auto keeps the installed preset support style; tree/normal explicitly select a style; layer preview still requires review")
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--dry-run", action="store_true", help="write resolved settings and command without executing the slicer")
     args = parser.parse_args(argv)

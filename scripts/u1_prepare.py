@@ -19,11 +19,15 @@ import sys
 import numpy as np
 import trimesh
 
+try:
+    from .u1_settings import INTENT_INFILL, INTENT_WALLS, INTENT_PATTERN
+except ImportError:
+    from u1_settings import INTENT_INFILL, INTENT_WALLS, INTENT_PATTERN
+
 
 NOMINAL_ENVELOPE_MM = np.array([270.0, 270.0, 270.0])
 BED_CENTER_MM = np.array([135.5, 136.0])
 SUPPORTED_INPUTS = {".stl", ".obj", ".glb"}
-INTENT_INFILL = {"draft": 8.0, "normal": 15.0, "strong": 25.0, "flexible": None}
 
 
 class PreparationError(ValueError):
@@ -239,8 +243,8 @@ def _print_plan(intent: str, material: str, infill_percent: float | None) -> dic
         "status": "recommendations_only_unsliced",
         "intent": intent,
         "material": {"requested_family": material, "verified_loaded_spool": False, "recommendation": "Use a matching installed material preset and confirm spool family/brand; no temperature or flow settings have been applied."},
-        "infill": {"recommended_percent": effective_infill, "recommended_pattern": "matching TPU profile" if intent == "flexible" else "gyroid or cubic if supported", "applied_to_mesh": False},
-        "walls": {"recommended_perimeters": 4 if intent == "strong" else 3, "status": "starting_point_only"},
+        "infill": {"recommended_percent": effective_infill, "recommended_pattern": INTENT_PATTERN[intent] or "matching TPU profile", "applied_to_mesh": False},
+        "walls": {"recommended_perimeters": INTENT_WALLS[intent], "status": "starting_point_only"},
         "supports": {"status": "unverified", "recommendation": "Inspect overhangs and support access in Snapmaker Orca; compare tree/organic and normal supports where appropriate. Protect delicate features and visible surfaces."},
         "color": {"mode": "preserve_source_textures", "full_spectrum": "not_converted", "recommendation": "Retain source colors. Verify actual filament identities, calibrated Full Spectrum mixing and slicer color assignments before creating a print project; no automatic palette substitution or mixing was performed."},
         "slicing_verified": False,
