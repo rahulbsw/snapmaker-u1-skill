@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import shutil
@@ -21,9 +22,11 @@ import zipfile
 
 try:
     from . import u1_gcode, u1_3mf
+    from .u1_settings import INTENT_INFILL, INTENT_WALLS, INTENT_PATTERN
 except ImportError:
     import u1_gcode
     import u1_3mf
+    from u1_settings import INTENT_INFILL, INTENT_WALLS, INTENT_PATTERN
 
 
 DEFAULT_APP = Path("/Applications/Snapmaker Orca.app")
@@ -133,8 +136,8 @@ def prepare_profiles(profiles_dir: str | Path, *, intent: str = "normal", materi
         raise SliceError("intent must be draft, normal, strong or flexible")
     if infill_percent is not None and (not math.isfinite(infill_percent) or not 0 <= infill_percent <= 100):
         raise SliceError("infill_percent must be finite and between 0 and 100")
-    if supports not in {"auto", "off"}:
-        raise SliceError("supports must be auto or off")
+    if supports not in {"auto", "off", "tree", "normal"}:
+        raise SliceError("supports must be auto, off, tree or normal")
     process_name = MIXING_PRESET if mixing else INTENT_PRESETS[intent]
     presets, provenance = {}, {}
     for kind, name in [("machine", MACHINE_NAME), ("process", process_name), ("filament", material)]:
@@ -171,17 +174,18 @@ def prepare_profiles(profiles_dir: str | Path, *, intent: str = "normal", materi
     # Supplying the selected machine's identical array retains prime-tower
     # semantics and avoids that null dereference without disabling priming.
     process["nozzle_diameter"] = list(nozzles)
-    process["enable_support"] = "1" if supports == "auto" else "0"
-    process["support_type"] = "tree(auto)"
+    process["enable_support"] = "0" if supports == "off" else "1"
+    process["support_type"] = {"tree": "tree(auto)", "normal": "normal(auto)"}.get(supports, process.get("support_type", "normal(auto)"))
     applied = {"enable_support": process["enable_support"], "support_type": process["support_type"]}
-    default_infill = {"draft": 8.0, "normal": 15.0, "strong": 25.0, "flexible": None}[intent]
+    default_infill = INTENT_INFILL[intent]
     chosen_infill = default_infill if infill_percent is None else infill_percent
     if chosen_infill is not None:
         process["sparse_infill_density"] = f"{chosen_infill:g}%"
         applied["sparse_infill_density"] = process["sparse_infill_density"]
-    if intent == "strong":
-        process["wall_loops"] = "4"
-        applied["wall_loops"] = "4"
+    for key, value in [("wall_loops", INTENT_WALLS[intent]), ("sparse_infill_pattern", INTENT_PATTERN[intent])]:
+        if value is not None:
+            process[key] = str(value)
+            applied[key] = str(value)
     process["print_settings_id"] = process_name
     filament["filament_settings_id"] = [material]
     machine["printer_settings_id"] = MACHINE_NAME
@@ -192,20 +196,31 @@ def prepare_profiles(profiles_dir: str | Path, *, intent: str = "normal", materi
         "filament": material,
         "standard_flow_collapsed_keys": collapsed,
         "intent_overrides": applied,
-        "supports": {"mode": supports, "type": "tree(auto)", "preview_reviewed": False},
+        "supports": {"mode": supports, "type": process["support_type"], "preview_reviewed": False},
         "crash_workaround": "Process-only normalization receives nozzle_diameter copied unchanged from the selected machine; wipe_tower_filament and priming remain enabled as specified by the official preset.",
         "crash_reference": "https://github.com/Snapmaker/OrcaSlicer/pull/561/files",
         "mixing": {"requested": mixing, "dedicated_preset_selected": mixing, "ratios_assigned": False, "color_mapping_verified": False},
     }
 
 
-def build_command(binary: str | Path, input_path: str | Path, run_dir: str | Path) -> list[str]:
+def build_command(binary, input_path, run_dir, *, arrange=False, preserve_project=False, allow_newer_file=False):
     directory = Path(run_dir).resolve()
     # Explicit argument vector; no shell, upload, printer-host or print command.
     # Snapmaker Orca prefixes --outputdir to the export name even when the
     # supplied name is absolute. Use a basename or export fails with a doubled
     # path after slicing (observed with the installed 2.4.1 macOS build).
-    return [str(Path(binary).resolve()), "--datadir", str(directory / "datadir"), "--load-settings", str(directory / "machine.json") + ";" + str(directory / "process.json"), "--load-filaments", str(directory / "filament.json"), "--slice", "1", "--export-3mf", "project.3mf", "--outputdir", str(directory), str(Path(input_path).resolve())]
+    sources = input_path if isinstance(input_path, (list, tuple)) else [input_path]
+    argv = [str(Path(binary).resolve()), "--datadir", str(directory / "datadir")]
+    if not preserve_project:
+        argv += ["--load-settings", str(directory / "machine.json") + ";" + str(directory / "process.json"), "--load-filaments", str(directory / "filament.json")]
+    # All plates in ONE project. No --assemble (would merge separate objects),
+    # scaling, auto-orientation or rotations that change the load direction.
+    argv += ["--orient", "0", "--allow-rotations=0", "--arrange", "1" if arrange else "0", "--slice", "0", "--export-3mf", "project.3mf", "--outputdir", str(directory)]
+    if allow_newer_file:
+        argv += ["--allow-newer-file=1"]
+    if arrange:
+        argv += ["--allow-multicolor-oneplate"]
+    return argv + [str(Path(path).resolve()) for path in sources]
 
 
 def _duration_seconds(text: str) -> int | None:
@@ -269,16 +284,99 @@ def _gcode_artifacts(run_dir: Path, machine: dict) -> list[dict]:
     return artifacts
 
 
-def slice_model(input_path: str | Path, output_dir: str | Path, *, app_path: str | Path | None = None, profiles_dir: str | Path | None = None, intent: str = "normal", material: str = "Generic PLA", mixing: bool = False, timeout: float = 600, dry_run: bool = False, infill_percent: float | None = None, supports: str = "auto") -> dict:
-    source, destination = Path(input_path).resolve(), Path(output_dir).resolve()
-    if not source.is_file() or source.suffix.lower() not in {".stl", ".obj", ".3mf"}:
-        raise SliceError("input must be an existing STL, OBJ or 3MF file; prepare GLB geometry as STL first")
+def project_totals(project, artifacts):
+    """Sum each plate once, even if Orca also exported loose G-code copies.
+
+    Different plates with byte-identical paths still count separately. Missing
+    estimates remain unknown instead of becoming zero or a partial total.
+    """
+    embedded = [item for item in artifacts if item["archive_member"] is not None]
+    selected = embedded or artifacts
+    by_plate = {}
+    for item in selected:
+        name = Path(item["archive_member"] or item["path"]).name
+        match = re.fullmatch(r"plate_(\d+)\.gcode", name, re.IGNORECASE)
+        if not match or int(match[1]) in by_plate:
+            raise SliceError("unrecognized or duplicate plate G-code; cannot total safely")
+        by_plate[int(match[1])] = item
+    expected = None
+    with zipfile.ZipFile(project) as archive:
+        u1_3mf.validate_archive(archive)
+        member = "Metadata/model_settings.config"
+        if member in archive.namelist():
+            config = u1_3mf.parse_xml(u1_3mf.read_member(archive, member, u1_3mf.MAX_MEMBER_BYTES))
+            expected = set()
+            for plate in config.findall("plate"):
+                if not plate.findall("model_instance"):
+                    continue
+                index = plate.find("metadata[@key='plater_id']")
+                if index is None or not (index.get("value", "").isdigit()):
+                    raise SliceError("missing native plate ID")
+                expected.add(int(index.get("value")))
+    # A legacy export without native object metadata can establish only the
+    # count of sliced artifacts, not that every intended object was included.
+    complete = bool(by_plate) and (expected is None or expected == set(by_plate))
+    estimates = [item["estimates"] for item in by_plate.values()]
+    grams = [item["filament_grams_by_tool"] for item in estimates]
+    seconds = [item["estimated_duration_seconds"] for item in estimates]
+    return {"all_plates_sliced": complete, "plate_count": len(by_plate),
+            "expected_plate_ids": sorted(expected) if expected is not None else None,
+            "sliced_plate_ids": sorted(by_plate),
+            "filament_grams": sum(sum(value) for value in grams) if grams and all(value is not None for value in grams) else None,
+            "duration_seconds": sum(seconds) if seconds and all(value is not None for value in seconds) else None,
+            "scope": "Slicer G-code estimates summed once per plate, including material/toolpaths reported by Orca; startup macro consumption and wall-clock time are not independently measured."}
+
+
+PROCESS_SUMMARY_KEYS = (
+    "layer_height", "initial_layer_print_height", "wall_loops", "sparse_infill_density", "sparse_infill_pattern",
+    "top_shell_layers", "top_shell_thickness", "bottom_shell_layers", "bottom_shell_thickness",
+    "enable_support", "support_type", "support_style", "support_interface_top_layers",
+    "support_interface_bottom_layers", "support_filament", "support_interface_filament", "print_sequence",
+    "enable_prime_tower", "brim_type", "brim_width", "outer_wall_speed", "filament_max_volumetric_speed")
+
+
+def project_settings_summary(path):
+    """Read actual exported settings; presence is not spool/color calibration."""
+    with zipfile.ZipFile(path) as archive:
+        u1_3mf.validate_archive(archive)
+        if "Metadata/project_settings.config" not in archive.namelist():
+            return None
+        settings = json.loads(u1_3mf.read_member(archive, "Metadata/project_settings.config"))
+        u1_3mf.reject_post_process(settings)
+        overrides = []
+        member = "Metadata/model_settings.config"
+        if member in archive.namelist():
+            config = u1_3mf.parse_xml(u1_3mf.read_member(archive, member, u1_3mf.MAX_MEMBER_BYTES))
+            overrides = sorted({entry.get("key") for obj in config.findall("object")
+                                for entry in obj.iter("metadata") if entry.get("key") in PROCESS_SUMMARY_KEYS})
+        return {"source": "exported_project", "machine": settings.get("printer_settings_id"),
+                "nozzle_mm": settings.get("nozzle_diameter"), "bed_type": settings.get("curr_bed_type"),
+                "logical_filament_profiles": settings.get("filament_settings_id"),
+                "material_families": settings.get("filament_type"), "configured_colors": settings.get("filament_colour"),
+                "process": {key: settings.get(key) for key in PROCESS_SUMMARY_KEYS},
+                "object_override_keys": overrides, "loaded_spool_match": "not_checked",
+                "full_spectrum": "definitions_present_unverified" if settings.get("mixed_filament_definitions") else "no_definitions_detected",
+                "physical_color_match": "not_verified"}
+
+
+def slice_model(input_path, output_dir: str | Path, *, preserve_project: bool = False, arrange: bool = False, allow_newer_file: bool = False, app_path: str | Path | None = None, profiles_dir: str | Path | None = None, intent: str = "normal", material: str = "Generic PLA", mixing: bool = False, timeout: float = 600, dry_run: bool = False, infill_percent: float | None = None, supports: str = "auto") -> dict:
+    sources = [Path(path).resolve() for path in (input_path if isinstance(input_path, (list, tuple)) else [input_path])]
+    if not sources:
+        raise SliceError("at least one input is required")
+    source, destination = sources[0], Path(output_dir).resolve()
+    if len(sources) > 1 and (any(path.suffix.lower() == ".3mf" for path in sources) or not arrange):
+        raise SliceError("multiple inputs require --arrange and STL/OBJ meshes; merge calibrated projects in native Orca")
+    if preserve_project and (len(sources) != 1 or source.suffix.lower() != ".3mf"):
+        raise SliceError("preserve_project requires one reviewed native U1 project")
+    for path in sources:
+        if not path.is_file() or path.suffix.lower() not in {".stl", ".obj", ".3mf"}:
+            raise SliceError("input must be an existing STL, OBJ or 3MF file; prepare GLB geometry as STL first")
     if source.suffix.lower() == ".3mf":
         if not zipfile.is_zipfile(source):
             raise SliceError("3MF input must be a valid project archive.")
         with zipfile.ZipFile(source) as archive:
             u1_3mf.validate_archive(archive)
-            if "Metadata/u1_conversion.json" in archive.namelist():
+            if "Metadata/u1_conversion.json" in archive.namelist() and not preserve_project:
                 raise SliceError("This converted project requires review and fresh slicing as a project in Snapmaker Orca. This adapter's single-filament overrides would replace its material and color assignments; use the project workflow in BAMBU_CONVERSION.md.")
             marker = "Metadata/u1_target_colors.json"
             if marker in archive.namelist():
@@ -300,17 +398,34 @@ def slice_model(input_path: str | Path, output_dir: str | Path, *, app_path: str
             u1_3mf.reject_post_process(project_settings)
             filaments = project_settings.get("filament_settings_id", [])
             palette = project_settings.get("filament_colour", [])
-            if ((isinstance(filaments, list) and len(filaments) > 1)
+            if not preserve_project and ((isinstance(filaments, list) and len(filaments) > 1)
                     or (isinstance(palette, list) and len(palette) > 1)
                     or project_settings.get("mixed_filament_definitions")):
                 raise SliceError("This project contains multiple filament or Full Spectrum assignments. Slice it through the native Orca project workflow; this adapter's single-filament overrides would replace its color and material mapping.")
-            if (not isinstance(filaments, list) or len(filaments) != 1
+            if not preserve_project and (not isinstance(filaments, list) or len(filaments) != 1
                     or not isinstance(filaments[0], str) or not filaments[0].strip()):
                 raise SliceError(unknown_project)
     if not math.isfinite(timeout) or timeout <= 0 or timeout > 600:
         raise SliceError("timeout must be finite, positive and at most 600 seconds")
+    if not dry_run and sys.platform == "darwin" and os.environ.get("CODEX_SANDBOX") == "seatbelt":
+        raise SliceError("Snapmaker Orca's 3MF export initializes macOS AppKit/OpenGL for thumbnails and can abort inside the Codex seatbelt sandbox. Use an approved execution with normal app access or run from Terminal; do not retry this native export inside the sandbox. --dry-run remains available.")
     binary, vendor = resolve_slicer(app_path, profiles_dir)
-    presets, selection = prepare_profiles(vendor, intent=intent, material=material, mixing=mixing, infill_percent=infill_percent, supports=supports)
+    if preserve_project:
+        if (project_settings.get("printer_model") != "Snapmaker U1"
+                or project_settings.get("nozzle_diameter") != ["0.4"] * 4):
+            raise SliceError("native project must identify Snapmaker U1 with four 0.4 mm nozzles")
+        u1_gcode.machine_region(project_settings)
+        with zipfile.ZipFile(source) as archive:
+            if "Metadata/model_settings.config" not in archive.namelist():
+                raise SliceError("native project lacks object/plate metadata")
+            model_settings = u1_3mf.parse_xml(u1_3mf.read_member(archive, "Metadata/model_settings.config", u1_3mf.MAX_MEMBER_BYTES))
+            for entry in model_settings.iter("metadata"):
+                if entry.get("key") in u1_3mf.POST_PROCESS:
+                    u1_3mf.reject_post_process({entry.get("key"): entry.get("value", entry.text or "")})
+        presets = {"machine": project_settings}
+        selection = {"preserve_project": True, "overrides_applied": False, "machine": MACHINE_NAME}
+    else:
+        presets, selection = prepare_profiles(vendor, intent=intent, material=material, mixing=mixing, infill_percent=infill_percent, supports=supports)
     for preset in presets.values():
         u1_3mf.reject_post_process(preset)
     destination.mkdir(parents=True, exist_ok=True)
@@ -326,7 +441,7 @@ def slice_model(input_path: str | Path, output_dir: str | Path, *, app_path: str
     (run_dir / "datadir").mkdir()
     for kind, preset in presets.items():
         (run_dir / f"{kind}.json").write_text(json.dumps(preset, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    argv = build_command(binary, source, run_dir)
+    argv = build_command(binary, sources, run_dir, arrange=arrange, preserve_project=preserve_project, allow_newer_file=allow_newer_file)
     (run_dir / "command.json").write_text(json.dumps(argv, indent=2) + "\n", encoding="utf-8")
     transcript = run_dir / "slice.log"
     return_code, timed_out, execution_error = None, False, None
@@ -353,16 +468,28 @@ def slice_model(input_path: str | Path, output_dir: str | Path, *, app_path: str
     exported = return_code == 0 and project.is_file() and zipfile.is_zipfile(project) and bool(gcodes)
     paths_passed = bool(gcodes) and all(item["toolpath_review"].get("passed") for item in gcodes)
     previews_generated = bool(gcodes) and all("previews" in item["toolpath_review"] for item in gcodes)
-    completed = exported and paths_passed and previews_generated
+    try:
+        totals = project_totals(project, gcodes) if exported else None
+        effective_settings = project_settings_summary(project) if exported else None
+    except (ValueError, OSError, zipfile.BadZipFile) as exc:
+        totals, effective_settings = None, None
+        execution_error = "Cannot verify all plates: " + str(exc)
+    completed = exported and paths_passed and previews_generated and bool(totals and totals["all_plates_sliced"])
     status = "prepared_not_executed" if dry_run else "slice_completed_review_required" if completed else "toolpath_review_failed" if exported else "slice_timed_out" if timed_out else "slice_failed"
     errors = [line for line in text.splitlines() if re.search(r"\berror\b|segmentation fault|not compatible|failed", line, re.IGNORECASE)][-30:]
-    with source.open("rb") as stream:
-        source_hash = hashlib.file_digest(stream, "sha256").hexdigest()
+    inputs = []
+    for path in sources:
+        with path.open("rb") as stream:
+            inputs.append({"path": str(path), "sha256": hashlib.file_digest(stream, "sha256").hexdigest()})
     report = {
         "schema_version": 1,
         "status": status,
-        "input": {"path": str(source), "sha256": source_hash},
+        "input": inputs[0],
+        "inputs": inputs,
+        "plate_totals": totals,
+        "arrange_requested": arrange,
         "selection": selection,
+        "effective_settings": effective_settings,
         "execution": {"command": argv, "return_code": return_code, "timeout_seconds": timeout, "timed_out": timed_out, "execution_error": execution_error, "dry_run": dry_run, "run_dir": str(run_dir), "error_lines": errors},
         "slice_completed": completed,
         "slicer_output_completed": exported,
@@ -382,7 +509,10 @@ def slice_model(input_path: str | Path, output_dir: str | Path, *, app_path: str
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input", type=Path)
+    parser.add_argument("input", type=Path, nargs="+")
+    parser.add_argument("--allow-newer-file", action="store_true", help="explicit version-check override for a project verified compatible with this installed Orca build")
+    parser.add_argument("--arrange", action="store_true", help="globally arrange all objects into fewer plates without scaling or tilting")
+    parser.add_argument("--preserve-project", action="store_true", help="use a reviewed native U1 project without overriding its calibrated materials or process")
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--app-path", type=Path, help="Snapmaker Orca app bundle, installation directory or CLI executable; otherwise use the macOS default or PATH")
     parser.add_argument("--profiles-dir", type=Path, default=None, help="explicit vendor profile directory for another local installation")
@@ -390,12 +520,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--material", default="Generic PLA", help="exact installed Snapmaker filament preset name")
     parser.add_argument("--mixing", action="store_true", help="select the official 0.10 mm Color Mixing process; does not assign colors or ratios")
     parser.add_argument("--infill-percent", type=float, default=None)
-    parser.add_argument("--supports", choices=["auto", "off"], default="auto", help="auto enables the official tree(auto) support mode; layer/support preview still requires review")
+    parser.add_argument("--supports", choices=["auto", "off", "tree", "normal"], default="auto", help="auto keeps the installed preset support style; tree/normal explicitly select a style; layer preview still requires review")
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--dry-run", action="store_true", help="write resolved settings and command without executing the slicer")
     args = parser.parse_args(argv)
     try:
-        report = slice_model(args.input, args.output_dir, app_path=args.app_path, profiles_dir=args.profiles_dir, intent=args.intent, material=args.material, mixing=args.mixing, timeout=args.timeout, dry_run=args.dry_run, infill_percent=args.infill_percent, supports=args.supports)
+        report = slice_model(args.input, args.output_dir, preserve_project=args.preserve_project, arrange=args.arrange, allow_newer_file=args.allow_newer_file, app_path=args.app_path, profiles_dir=args.profiles_dir, intent=args.intent, material=args.material, mixing=args.mixing, timeout=args.timeout, dry_run=args.dry_run, infill_percent=args.infill_percent, supports=args.supports)
     except (ValueError, OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

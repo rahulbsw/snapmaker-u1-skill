@@ -3,6 +3,8 @@
 | Feature | Included | Limits |
 |---|---|---|
 | Text to functional models | CAD workflow and editable original example | CAD tool/dependencies must exist; no direct neural text-to-3D backend |
+| Optional SolidCraft | Documented local MCP/CLI CAD-source route for dimensioned parts | Separate optional app; no bundled runtime, automatic MCP setup, portrait reconstruction or verified MCP modeling session |
+| Beginner guidance | Plain-language intent/settings, first-print checklist, preview and troubleshooting | Physical setup, observation and testing remain user tasks |
 | Images to 3D | TripoSR setup; optional Modly and TRELLIS workflows | Generated hidden surfaces and facial likeness require review; not a measured scan |
 | Background removal | Native Apple Vision or optional local TripoSR human-segmentation model; supplied transparency | Apple helper requires macOS; optional segmentation needs local weights; masks require review |
 | Multiview capture | Native Apple Object Capture helper | Compatible Mac and overlapping real capture set required |
@@ -13,9 +15,9 @@
 | Color preparation | Target color regions, generic 3MF and native paint export | Fresh single-filament template required; physical mixes not generated |
 | U1 Full Spectrum | Matching/calibration workflow | Native Orca matching with actual spools and color review required |
 | Bambu projects | Guarded wrapper, source/mapping audits, stale G-code removal | Separate noncommercial backend; up to four ordinary colors with bijective routing |
-| Slicing and estimates | Local official U1 0.4 mm profiles, isolated runs, actual G-code estimates | Mixed projects use native project slicing; no printer upload; layer review required |
+| Slicing and estimates | Local official U1 0.4 mm profiles or explicit native-project preservation, all-plate slicing, isolated runs, actual G-code estimates | No printer upload; native compatibility and layer review required; macOS seatbelt export blocked |
 | Optional printer check | Read-only local status, temperatures, decoded RFID details, separate configured filament settings and four-slot comparisons | Explicit authorized target and physical mapping required; missing RFID stays unknown; conflicts need review; no controls, remaining-weight measurement or mix calibration |
-| Filament and plate optimization | Geometry/infill/support/color-change tradeoffs and slice comparisons | No globally optimal packing or guaranteed material savings |
+| Filament and plate optimization | One project with all plates, native packing, original-vs-packed comparisons; opt-in bounded infill/support alternatives with explicit constraints and actual exported-setting reports | No global optimum or strength/finish guarantee; global process constraints exclude per-object/adaptive overrides; no automatic merge of independent calibrated 3MFs; incomplete estimates cannot establish savings |
 
 CAD and slice checks have been exercised locally. Public tests use synthetic geometry; optional dependencies are not bundled. Physical-print accuracy and portrait likeness are never inferred from automated test success.
 

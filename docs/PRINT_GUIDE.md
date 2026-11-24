@@ -1,5 +1,7 @@
 # Snapmaker U1 print guide
 
+New to 3D printing? Follow [First reliable prints on the U1](BEGINNER_GUIDE.md) for material choice, plain-language settings, preparation, preview, first-layer checks and troubleshooting. SolidCraft is [optional CAD input](../references/SOLIDCRAFT.md), not a prerequisite for this print workflow.
+
 ## Intent presets
 
 | Intent | Starting approach | Typical use |
@@ -10,6 +12,8 @@
 | Flexible | U1-compatible TPU profile, gentle geometry and no sharp thin hinges | Grips, bumpers, compliant parts |
 
 These are intent labels, not fixed slicer profiles. Use current Snapmaker Orca presets for layer height, speed, temperature, cooling, and material behavior.
+
+For new meshes, shared starting points explicitly apply 3 walls / 8% gyroid for Draft, 3 walls / 15% gyroid for Normal, and 4 walls / 25% gyroid for Strong. Flexible retains the dedicated profile's walls/pattern/density unless explicitly configured. Native projects retain their own settings. Support `auto` keeps the selected preset's style; `tree` and `normal` explicitly select those styles. Recommendations and slicing use the same intent values; exported settings in the print card are authoritative.
 
 ## Portraits and Full Spectrum
 
@@ -38,6 +42,72 @@ Infill supports top surfaces and contributes to stiffness, but walls and orienta
 3. Use tree/organic supports when the current slicer and geometry benefit; compare with normal supports in preview.
 4. Arrange parts in one plate only when the printable polygon, clearances, support footprints, and print sequence all fit.
 5. Compare sliced filament usage and time across viable orientations in Snapmaker Orca. Include purge waste for multicolor work.
+
+### One project, fewer plates, fewer delivery files
+
+Use `u1_project.py` as the default final-delivery helper. The output folder contains **`project.3mf` and `PRINT_CARD.md`**; detailed settings, attempts, comparisons, G-code and previews stay in `.work/`. Keep editable CAD alongside these when appropriate. Intermediate preparation/preview helpers should also write into `.work/`, not create additional top-level deliveries. Original inputs are preserved in place. Output folders must be fresh (preprocessing under `.work/` is allowed), so an accepted project cannot be overwritten accidentally.
+
+```sh
+# Pack separate dimensioned parts into ONE project, retaining editable objects.
+python scripts/u1_project.py body.stl lid.stl handle.stl \
+  --output-dir outputs/organizer --intent strong --material 'Generic PLA'
+
+# Existing reviewed U1 project: slice the original layout and global packing.
+python scripts/u1_project.py reviewed-u1.3mf --plates compare \
+  --objective balanced --output-dir outputs/optimized
+
+# Explicit alternatives: preserve the current plates, or prioritize fewer plates.
+python scripts/u1_project.py reviewed-u1.3mf --plates keep --output-dir outputs/kept
+python scripts/u1_project.py reviewed-u1.3mf --plates compare \
+  --objective plates --output-dir outputs/fewest-plates
+```
+
+`--plates combine` requests global arrangement directly. Packing uses Orca's actual machine/process settings and may still require several plates. All plates remain in the same project. Multiple independent calibrated 3MF files are not automatically merged: import compatible objects into one native project in Orca first, preserving part/paint assignments. Differing per-plate settings, filament maps or locked plates block packing; `keep` preserves those jobs, and `compare` falls back to the preserved layout with an explanation. Unmatched Full Spectrum targets still require Manual Match.
+
+For a native U1 0.4 mm project, the helper invokes Orca **without process or filament overrides**. It verifies original settings, mesh/paint data, instance counts, composed orientation/scale/Z position, assembly spacing, and object/plate overrides after export; only whole-object XY placement and tower XY positions may change. Unknown changes prevent promotion. This conservative check may require manual Orca preparation for other project structures. New STL/OBJ parts use the chosen official intent and material profiles and carry no source color calibration.
+
+`balanced` chooses packing only if slicer time, filament and plate count all stay equal or improve, with at least one improvement. `time`, `filament` and `plates` explicitly prioritize that metric and can trade off the others; the card shows both layouts. Estimates sum each plate once, even if loose and embedded G-code copies coexist. Two plates containing identical G-code still count twice. Missing plate data or estimates cannot establish savings. A native failure stops further attempts; a rejected packing result keeps a passing preserved original layout.
+
+Start with layout to avoid lowering quality/strength settings. Keep layer height, perimeter count, wall/top/bottom thickness, infill, supports/interfaces, flow/cooling limits and calibrated colors unchanged. If further savings are needed, compare a few applicable alternatives: shorter support spans with a load-safe orientation, accessible support styles/interfaces, ribs/local reinforcement, or internal infill changes justified by the intended load and top-surface spans. Evaluate those changes separately with layer previews and fit/load coupons as needed. The bundled automatic comparison changes **placement only**; it does not certify equivalent physical strength or surface finish. Fewer plates can add travel, color changes, cooling/adhesion issues or increase the cost of a failed print. Include those risks in selection.
+
+The slicer reports supports, brim and tower usage in its G-code estimates; custom macro purge, startup consumption and real wall-clock time are not independently measured. Do not label these estimates as measured spool consumption or guaranteed savings.
+
+### Constrained process alternatives
+
+Layout-only comparisons remain the default. To evaluate process changes, supply a JSON file declaring the part's requirements and acceptable alternatives. For example, after establishing that the intended part can use these values:
+
+```json
+{
+  "minimum_walls": 3,
+  "minimum_infill_percent": 15,
+  "maximum_layer_height_mm": 0.2,
+  "minimum_top_thickness_mm": 0.8,
+  "minimum_bottom_thickness_mm": 0.6,
+  "infill_patterns": ["gyroid", "cubic"],
+  "infill_percentages": [15, 20],
+  "support_types": ["normal(auto)", "tree(auto)"],
+  "max_candidates": 4
+}
+```
+
+```sh
+python scripts/u1_project.py reviewed-u1.3mf --plates compare \
+  --constraints limits.json --output-dir outputs/constrained
+```
+
+Limits must be finite and valid; unknown keys are refused. `max_candidates` counts **all** native slices, including baseline/layout, and is capped at six. Alternatives change one factor at a time in the listed pattern, density, then support order until the budget is exhausted. A larger combinatorial search is not performed. Supported patterns are `gyroid`, `cubic`, `adaptivecubic`, `grid` and `rectilinear`; support styles are normal/tree auto. Disabled supports stay disabled. No temperature, speed, flow, nozzle, layer-height, wall, shell, geometry, orientation, support-material or color-recipe change is permitted by this search.
+
+Each process alternative is a new native working copy of the accepted layout, preserving materials/recipes and removing stale G-code. It receives a fresh all-plate slice, geometry/settings preservation check and declared-limit check. Wall count and top/bottom shell thickness cannot fall below the original; layer height cannot exceed the original. Infill can only use a listed value at or above the declared minimum. Do not choose a lower minimum without understanding the part's loads and finish needs. The same balanced/time/filament/plate objective selects among eligible results, with actual changes and failures recorded in the card.
+
+Per-object process overrides and adaptive/range layers are not evaluated by these global constraints and require a manual workflow. Missing required settings or a baseline that fails the declared limits prevents automatic selection. A native failure stops further attempts and retains an already eligible candidate. Constraint checks enforce software limits; they do not establish equivalent mechanical strength, appearance or support removability. Review layers and test functional fits/loads as appropriate.
+
+The print card separates slice, preservation and constraint status, shows the actual exported settings and estimates, and labels spool/color/physical checks as unverified. When opening an existing project, `--intent`, `--material` and `--supports` are refused; edit a reviewed source project or use the supported constraints instead of silently changing native settings.
+
+### macOS CLI crash and compatibility handling
+
+Orca's 3MF export initializes AppKit/OpenGL through `glfwInit` to render thumbnails. A restricted Codex seatbelt launch can abort during macOS application registration even after slicing wrote G-code. The helper refuses native execution in that environment before launching; dry runs still work. Use an approved execution with normal app access or run from Terminal. Do not reset user presets, reinstall Orca or repeatedly retry a failed native export as a workaround. An isolated run directory leaves normal Orca configuration untouched.
+
+Snapmaker Orca 2.4.1 also has a legacy CLI version check that can reject its own 2.x exports. `--allow-newer-file` is an explicit compatibility override available on both helpers. Use it only after verifying the project is compatible with the selected installed build (as with a synthetic project exported by that exact build). It does not fix graphics initialization. [Snapmaker's CLI source](https://github.com/Snapmaker/OrcaSlicer/blob/main/src/Snapmaker_Orca.cpp) documents the version-check correction and thumbnail path; native `--help` is the authority for the installed build's flags. Shader/thumbnail errors remain separate from path validation and need inspection in the exported project's native preview.
 
 ## Toolpath review
 
